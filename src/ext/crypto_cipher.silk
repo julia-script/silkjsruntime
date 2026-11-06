@@ -554,7 +554,6 @@ fn isXts(mode: Mode) -> bool { return match mode { Mode.Xts => true _ => false }
 fn available(entry: &Spec, ivLength: usize, tagLength: usize) -> bool {
   return match entry.family {
     Family.Aria => match entry.mode { Mode.Gcm => false Mode.Ccm => false _ => true }
-    Family.Aes => match entry.mode { Mode.Gcm => ivLength == 12 _ => true }
     _ => true
   }
 }
@@ -932,7 +931,7 @@ impl CipherState {
       CipherState.TripleDesOfb { state } => done(0)
       CipherState.AesCbcHmac { state } => blockResult(state.finish(move output))
       CipherState.AesGcmEncrypt { state } => match state.finish(move tagOutput) { Result.Success { .. } => done(0) Result.Failure { .. } => unsupported() }
-      CipherState.AesGcmDecrypt { state } => if tag.length != 16 { authenticationFailed() } else { match state.finish(tag) { Result.Success { .. } => done(0) Result.Failure { .. } => authenticationFailed() } }
+      CipherState.AesGcmDecrypt { state } => match state.finish(tag) { Result.Success { .. } => done(0) Result.Failure { .. } => authenticationFailed() }
       CipherState.AesOcbEncrypt { state } => match state.finish(move output, Slice.viewMut<u8>(move tagOutput, 0, setup.tagLength)) { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
       CipherState.AesOcbDecrypt { state } => if tag.length != setup.tagLength { authenticationFailed() } else { match state.finish(move output, tag) { Result.Success { value } => done(value) Result.Failure { .. } => authenticationFailed() } }
       CipherState.PolyEncrypt { state } => match state.finish(move tagOutput) { Result.Success { .. } => done(0) Result.Failure { .. } => unsupported() }
