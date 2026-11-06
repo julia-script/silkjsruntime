@@ -1,6 +1,7 @@
 //! OpenSSL 3.6.3 public C ABI (Homebrew headers); opaque pointers never escape to JavaScript.
 pub unsafe extern "C" fn calloc(count: usize, size: usize) -> ?*mut u8
 pub unsafe extern "C" fn free(p: ?*mut u8) -> ()
+pub unsafe extern "C" fn malloc(size: usize) -> ?*mut u8
 @foreign(noCapture: .("p"))
 pub unsafe extern "C" fn RAND_bytes(p: ?*mut u8, n: i32) -> i32
 pub unsafe extern "C" fn ERR_clear_error() -> ()
@@ -9,30 +10,13 @@ pub unsafe extern "C" fn ERR_get_error() -> u64
 pub unsafe extern "C" fn ERR_error_string_n(code: u64, p: ?*mut u8, n: usize) -> ()
 @foreign(noCapture: .("name"))
 pub unsafe extern "C" fn EVP_get_digestbyname(name: ?*mut u8) -> ?*mut u8
-@foreign(noCapture: .("md"))
-pub unsafe extern "C" fn EVP_MD_get_size(md: ?*mut u8) -> i32
 pub unsafe extern "C" fn EVP_MD_CTX_new() -> ?*mut u8
 @foreign(noCapture: .("ctx"))
 pub unsafe extern "C" fn EVP_MD_CTX_free(ctx: ?*mut u8) -> ()
-@foreign(noCapture: .("dst", "src"))
-pub unsafe extern "C" fn EVP_MD_CTX_copy_ex(dst: ?*mut u8, src: ?*mut u8) -> i32
 @foreign(noCapture: .("ctx"))
 pub unsafe extern "C" fn EVP_DigestInit_ex(ctx: ?*mut u8, md: ?*mut u8, implementation: ?*mut u8) -> i32
-@foreign(noCapture: .("ctx", "p"))
-pub unsafe extern "C" fn EVP_DigestUpdate(ctx: ?*mut u8, p: ?*mut u8, n: usize) -> i32
-@foreign(noCapture: .("ctx", "p", "n"))
-pub unsafe extern "C" fn EVP_DigestFinal_ex(ctx: ?*mut u8, p: ?*mut u8, n: *mut u32) -> i32
-@foreign(noCapture: .("ctx", "p"))
-pub unsafe extern "C" fn EVP_DigestFinalXOF(ctx: ?*mut u8, p: ?*mut u8, n: usize) -> i32
-pub unsafe extern "C" fn HMAC_CTX_new() -> ?*mut u8
-@foreign(noCapture: .("ctx"))
-pub unsafe extern "C" fn HMAC_CTX_free(ctx: ?*mut u8) -> ()
 @foreign(noCapture: .("ctx", "key"))
 pub unsafe extern "C" fn HMAC_Init_ex(ctx: ?*mut u8, key: ?*mut u8, n: i32, md: ?*mut u8, implementation: ?*mut u8) -> i32
-@foreign(noCapture: .("ctx", "p"))
-pub unsafe extern "C" fn HMAC_Update(ctx: ?*mut u8, p: ?*mut u8, n: usize) -> i32
-@foreign(noCapture: .("ctx", "p", "n"))
-pub unsafe extern "C" fn HMAC_Final(ctx: ?*mut u8, p: ?*mut u8, n: *mut u32) -> i32
 @foreign(noCapture: .("name"))
 pub unsafe extern "C" fn EVP_get_cipherbyname(name: ?*mut u8) -> ?*mut u8
 @foreign(noCapture: .("cipher"))
@@ -54,12 +38,6 @@ pub unsafe extern "C" fn EVP_CipherInit_ex(ctx: ?*mut u8, cipher: ?*mut u8, impl
 pub unsafe extern "C" fn EVP_CipherUpdate(ctx: ?*mut u8, out: ?*mut u8, n: *mut i32, input: ?*mut u8, len: i32) -> i32
 @foreign(noCapture: .("ctx", "out", "n"))
 pub unsafe extern "C" fn EVP_CipherFinal_ex(ctx: ?*mut u8, out: ?*mut u8, n: *mut i32) -> i32
-@foreign(noCapture: .("pass", "salt", "md", "out"))
-pub unsafe extern "C" fn PKCS5_PBKDF2_HMAC(pass: ?*mut u8, pn: i32, salt: ?*mut u8, sn: i32, rounds: i32, md: ?*mut u8, n: i32, out: ?*mut u8) -> i32
-@foreign(noCapture: .("pass", "salt", "out"))
-pub unsafe extern "C" fn EVP_PBE_scrypt(pass: ?*mut u8, pn: usize, salt: ?*mut u8, sn: usize, n: u64, r: u64, p: u64, maxmem: u64, out: ?*mut u8, len: usize) -> i32
-@foreign(noCapture: .("implementation"))
-pub unsafe extern "C" fn EVP_PKEY_CTX_new_id(id: i32, implementation: ?*mut u8) -> ?*mut u8
 @foreign(noCapture: .("libctx", "name", "props"))
 pub unsafe extern "C" fn EVP_PKEY_CTX_new_from_name(libctx: ?*mut u8, name: ?*mut u8, props: ?*mut u8) -> ?*mut u8
 pub unsafe extern "C" fn EVP_PKEY_CTX_new(key: ?*mut u8, implementation: ?*mut u8) -> ?*mut u8
@@ -73,14 +51,6 @@ pub unsafe extern "C" fn EVP_PKEY_private_check(ctx: ?*mut u8) -> i32
 pub unsafe extern "C" fn EVP_PKEY_derive_set_peer(ctx: ?*mut u8, key: ?*mut u8) -> i32
 @foreign(noCapture: .("ctx", "out", "n"))
 pub unsafe extern "C" fn EVP_PKEY_derive(ctx: ?*mut u8, out: ?*mut u8, n: *mut usize) -> i32
-@foreign(noCapture: .("ctx", "md"))
-pub unsafe extern "C" fn EVP_PKEY_CTX_set_hkdf_md(ctx: ?*mut u8, md: ?*mut u8) -> i32
-@foreign(noCapture: .("ctx", "salt"))
-pub unsafe extern "C" fn EVP_PKEY_CTX_set1_hkdf_salt(ctx: ?*mut u8, salt: ?*mut u8, n: i32) -> i32
-@foreign(noCapture: .("ctx", "key"))
-pub unsafe extern "C" fn EVP_PKEY_CTX_set1_hkdf_key(ctx: ?*mut u8, key: ?*mut u8, n: i32) -> i32
-@foreign(noCapture: .("ctx", "info"))
-pub unsafe extern "C" fn EVP_PKEY_CTX_add1_hkdf_info(ctx: ?*mut u8, info: ?*mut u8, n: i32) -> i32
 @foreign(noCapture: .("ctx"))
 pub unsafe extern "C" fn EVP_PKEY_keygen_init(ctx: ?*mut u8) -> i32
 @foreign(noCapture: .("ctx", "out"))
@@ -241,8 +211,6 @@ pub unsafe extern "C" fn CRYPTO_malloc(size: usize, file: ?*mut u8, line: i32) -
 pub unsafe extern "C" fn CRYPTO_free(p: ?*mut u8, file: ?*mut u8, line: i32) -> ()
 pub type AlgorithmCallback = extern "C" fn(?*mut u8, ?*mut u8, ?*mut u8, ?*mut u8) -> ()
 pub extern "C" struct Curve { pub nid: i32, pub comment: ?*const u8 }
-@callbacks("cb")
-pub unsafe extern "C" fn EVP_MD_do_all_sorted(cb: AlgorithmCallback, data: ?*mut u8) -> ()
 @callbacks("cb")
 pub unsafe extern "C" fn EVP_CIPHER_do_all_sorted(cb: AlgorithmCallback, data: ?*mut u8) -> ()
 @foreign(noCapture: .("curves"))

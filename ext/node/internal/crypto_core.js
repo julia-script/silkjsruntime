@@ -21,7 +21,7 @@ function normalize(e) {
   if (match) { e.code = match[1]; e.message = e.message.slice(match[0].length); }
   else if (!e.code) e.code = 'ERR_OSSL_CRYPTO_OPERATION_FAILED';
   const openssl = /^error:([0-9a-f]+):([^:]*):[^:]*:(.*)$/i.exec(e.message);
-  if (openssl) { e.library = openssl[2]; e.reason = openssl[3]; e.opensslErrorStack = [e.message]; const reason = openssl[3].toUpperCase().replace(/[^A-Z0-9]+/g, '_'); if (reason) e.code = `ERR_OSSL_${reason}`; }
+  if (openssl) { e.library = openssl[2]; e.reason = openssl[3]; e.opensslErrorStack = [e.message]; const reason = openssl[3].toUpperCase().replace(/[^A-Z0-9]+/g, '_'); if (reason && (!match || match[1] === 'ERR_OSSL_CRYPTO_OPERATION_FAILED')) e.code = `ERR_OSSL_${reason}`; }
   return e;
 }
 function call(op, args) { try { return host.crypto(op, args); } catch (e) { throw normalize(e); } }

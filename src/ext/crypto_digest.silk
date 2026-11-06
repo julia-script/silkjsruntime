@@ -1,0 +1,467 @@
+//! Hashes, HMAC, PBKDF2 and HKDF for node:crypto on `silk.crypto`, chosen by OpenSSL name at run
+//! time.
+//!
+//! The names are the ones Node accepts with its default OpenSSL provider: the legacy names such as
+//! `RSA-SHA256` and `sha256WithRSAEncryption`, the provider names such as `SHA2-256` and
+//! `SHA-512/256`, and the dotted object identifiers, all without regard to ASCII case. MD4,
+//! MDC-2 and Whirlpool are legacy-provider algorithms that Node refuses, so they are not here.
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.crypto.digest { Digest }
+import silk.crypto.hmac { Hmac }
+import silk.crypto.pbkdf2 { Pbkdf2, Pbkdf2Error }
+import silk.crypto.hkdf { Hkdf, OutputTooLongError }
+import silk.crypto.md5 { Md5 }
+import silk.crypto.md5_sha1 { Md5Sha1 }
+import silk.crypto.sha1 { Sha1 }
+import silk.crypto.ripemd160 { Ripemd160 }
+import silk.crypto.blake2b { Blake2b512 }
+import silk.crypto.blake2s { Blake2s256 }
+import silk.crypto.sha2 { Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256 }
+import silk.crypto.sha3 { Sha3_224, Sha3_256, Sha3_384, Sha3_512, Shake128, Shake256 }
+import silk.crypto.sm3 { Sm3 }
+
+/// A hash that node:crypto can name.
+pub enum Algorithm { Md5, Md5Sha1, Sha1, Ripemd160, Blake2b512, Blake2s256, Sha224, Sha256, Sha384, Sha512, Sha512_224, Sha512_256, Sha3_224, Sha3_256, Sha3_384, Sha3_512, Sm3, Shake128, Shake256 }
+
+struct Name { text: &'static [u8], algorithm: Algorithm }
+const NAMES: [Name; 88] = [
+  Name { text: b"md5", algorithm: Algorithm.Md5 },
+  Name { text: b"rsa-md5", algorithm: Algorithm.Md5 },
+  Name { text: b"ssl3-md5", algorithm: Algorithm.Md5 },
+  Name { text: b"md5withrsaencryption", algorithm: Algorithm.Md5 },
+  Name { text: b"1.2.840.113549.2.5", algorithm: Algorithm.Md5 },
+  Name { text: b"md5-sha1", algorithm: Algorithm.Md5Sha1 },
+  Name { text: b"sha1", algorithm: Algorithm.Sha1 },
+  Name { text: b"sha-1", algorithm: Algorithm.Sha1 },
+  Name { text: b"rsa-sha1", algorithm: Algorithm.Sha1 },
+  Name { text: b"rsa-sha1-2", algorithm: Algorithm.Sha1 },
+  Name { text: b"ssl3-sha1", algorithm: Algorithm.Sha1 },
+  Name { text: b"sha1withrsaencryption", algorithm: Algorithm.Sha1 },
+  Name { text: b"1.3.14.3.2.26", algorithm: Algorithm.Sha1 },
+  Name { text: b"ripemd", algorithm: Algorithm.Ripemd160 },
+  Name { text: b"ripemd-160", algorithm: Algorithm.Ripemd160 },
+  Name { text: b"ripemd160", algorithm: Algorithm.Ripemd160 },
+  Name { text: b"rmd160", algorithm: Algorithm.Ripemd160 },
+  Name { text: b"rsa-ripemd160", algorithm: Algorithm.Ripemd160 },
+  Name { text: b"ripemd160withrsa", algorithm: Algorithm.Ripemd160 },
+  Name { text: b"1.3.36.3.2.1", algorithm: Algorithm.Ripemd160 },
+  Name { text: b"blake2b-512", algorithm: Algorithm.Blake2b512 },
+  Name { text: b"blake2b512", algorithm: Algorithm.Blake2b512 },
+  Name { text: b"1.3.6.1.4.1.1722.12.2.1.16", algorithm: Algorithm.Blake2b512 },
+  Name { text: b"blake2s-256", algorithm: Algorithm.Blake2s256 },
+  Name { text: b"blake2s256", algorithm: Algorithm.Blake2s256 },
+  Name { text: b"1.3.6.1.4.1.1722.12.2.2.8", algorithm: Algorithm.Blake2s256 },
+  Name { text: b"sha224", algorithm: Algorithm.Sha224 },
+  Name { text: b"sha-224", algorithm: Algorithm.Sha224 },
+  Name { text: b"sha2-224", algorithm: Algorithm.Sha224 },
+  Name { text: b"rsa-sha224", algorithm: Algorithm.Sha224 },
+  Name { text: b"sha224withrsaencryption", algorithm: Algorithm.Sha224 },
+  Name { text: b"2.16.840.1.101.3.4.2.4", algorithm: Algorithm.Sha224 },
+  Name { text: b"sha256", algorithm: Algorithm.Sha256 },
+  Name { text: b"sha-256", algorithm: Algorithm.Sha256 },
+  Name { text: b"sha2-256", algorithm: Algorithm.Sha256 },
+  Name { text: b"rsa-sha256", algorithm: Algorithm.Sha256 },
+  Name { text: b"sha256withrsaencryption", algorithm: Algorithm.Sha256 },
+  Name { text: b"2.16.840.1.101.3.4.2.1", algorithm: Algorithm.Sha256 },
+  Name { text: b"sha384", algorithm: Algorithm.Sha384 },
+  Name { text: b"sha-384", algorithm: Algorithm.Sha384 },
+  Name { text: b"sha2-384", algorithm: Algorithm.Sha384 },
+  Name { text: b"rsa-sha384", algorithm: Algorithm.Sha384 },
+  Name { text: b"sha384withrsaencryption", algorithm: Algorithm.Sha384 },
+  Name { text: b"2.16.840.1.101.3.4.2.2", algorithm: Algorithm.Sha384 },
+  Name { text: b"sha512", algorithm: Algorithm.Sha512 },
+  Name { text: b"sha-512", algorithm: Algorithm.Sha512 },
+  Name { text: b"sha2-512", algorithm: Algorithm.Sha512 },
+  Name { text: b"rsa-sha512", algorithm: Algorithm.Sha512 },
+  Name { text: b"sha512withrsaencryption", algorithm: Algorithm.Sha512 },
+  Name { text: b"2.16.840.1.101.3.4.2.3", algorithm: Algorithm.Sha512 },
+  Name { text: b"sha512-224", algorithm: Algorithm.Sha512_224 },
+  Name { text: b"sha-512/224", algorithm: Algorithm.Sha512_224 },
+  Name { text: b"sha2-512/224", algorithm: Algorithm.Sha512_224 },
+  Name { text: b"rsa-sha512/224", algorithm: Algorithm.Sha512_224 },
+  Name { text: b"sha512-224withrsaencryption", algorithm: Algorithm.Sha512_224 },
+  Name { text: b"2.16.840.1.101.3.4.2.5", algorithm: Algorithm.Sha512_224 },
+  Name { text: b"sha512-256", algorithm: Algorithm.Sha512_256 },
+  Name { text: b"sha-512/256", algorithm: Algorithm.Sha512_256 },
+  Name { text: b"sha2-512/256", algorithm: Algorithm.Sha512_256 },
+  Name { text: b"rsa-sha512/256", algorithm: Algorithm.Sha512_256 },
+  Name { text: b"sha512-256withrsaencryption", algorithm: Algorithm.Sha512_256 },
+  Name { text: b"2.16.840.1.101.3.4.2.6", algorithm: Algorithm.Sha512_256 },
+  Name { text: b"sha3-224", algorithm: Algorithm.Sha3_224 },
+  Name { text: b"rsa-sha3-224", algorithm: Algorithm.Sha3_224 },
+  Name { text: b"id-rsassa-pkcs1-v1_5-with-sha3-224", algorithm: Algorithm.Sha3_224 },
+  Name { text: b"2.16.840.1.101.3.4.2.7", algorithm: Algorithm.Sha3_224 },
+  Name { text: b"sha3-256", algorithm: Algorithm.Sha3_256 },
+  Name { text: b"rsa-sha3-256", algorithm: Algorithm.Sha3_256 },
+  Name { text: b"id-rsassa-pkcs1-v1_5-with-sha3-256", algorithm: Algorithm.Sha3_256 },
+  Name { text: b"2.16.840.1.101.3.4.2.8", algorithm: Algorithm.Sha3_256 },
+  Name { text: b"sha3-384", algorithm: Algorithm.Sha3_384 },
+  Name { text: b"rsa-sha3-384", algorithm: Algorithm.Sha3_384 },
+  Name { text: b"id-rsassa-pkcs1-v1_5-with-sha3-384", algorithm: Algorithm.Sha3_384 },
+  Name { text: b"2.16.840.1.101.3.4.2.9", algorithm: Algorithm.Sha3_384 },
+  Name { text: b"sha3-512", algorithm: Algorithm.Sha3_512 },
+  Name { text: b"rsa-sha3-512", algorithm: Algorithm.Sha3_512 },
+  Name { text: b"id-rsassa-pkcs1-v1_5-with-sha3-512", algorithm: Algorithm.Sha3_512 },
+  Name { text: b"2.16.840.1.101.3.4.2.10", algorithm: Algorithm.Sha3_512 },
+  Name { text: b"sm3", algorithm: Algorithm.Sm3 },
+  Name { text: b"rsa-sm3", algorithm: Algorithm.Sm3 },
+  Name { text: b"sm3withrsaencryption", algorithm: Algorithm.Sm3 },
+  Name { text: b"1.2.156.10197.1.401", algorithm: Algorithm.Sm3 },
+  Name { text: b"shake128", algorithm: Algorithm.Shake128 },
+  Name { text: b"shake-128", algorithm: Algorithm.Shake128 },
+  Name { text: b"2.16.840.1.101.3.4.2.11", algorithm: Algorithm.Shake128 },
+  Name { text: b"shake256", algorithm: Algorithm.Shake256 },
+  Name { text: b"shake-256", algorithm: Algorithm.Shake256 },
+  Name { text: b"2.16.840.1.101.3.4.2.12", algorithm: Algorithm.Shake256 },
+]
+
+fn lower(byte: u8) -> u8 { if byte >= 65 && byte <= 90 { return byte + 32 } return byte }
+
+// Whether `name` spells the lowercase `text`, ignoring the case of ASCII letters.
+fn sameName(text: &[u8], name: &[u8]) -> bool {
+  if text.length != name.length { return false }
+  let mut k: usize = 0
+  while k < text.length { if lower(name[k]) != text[k] { return false } k = k + 1 }
+  return true
+}
+
+/// Returns the hash that `name` names, comparing ASCII letters without regard to case.
+pub fn lookup(name: &[u8]) -> Option<Algorithm> {
+  let mut i: usize = 0
+  while i < NAMES.length {
+    if sameName(NAMES[i].text, name) { return Option<Algorithm>.some(NAMES[i].algorithm) }
+    i = i + 1
+  }
+  return Option<Algorithm>.none()
+}
+
+/// Whether the hash has an output length of the caller's choice (SHAKE128 and SHAKE256).
+pub fn isXof(algorithm: Algorithm) -> bool {
+  return match algorithm { Algorithm.Shake128 => true Algorithm.Shake256 => true _ => false }
+}
+
+/// Names that OpenSSL keeps in its legacy provider, which Node does not load. Node reports these
+/// as unsupported rather than unknown.
+pub fn isLegacy(name: &[u8]) -> bool {
+  return sameName(b"md4", name)
+    || sameName(b"rsa-md4", name)
+    || sameName(b"md4withrsaencryption", name)
+    || sameName(b"1.2.840.113549.2.4", name)
+    || sameName(b"whirlpool", name)
+    || sameName(b"1.0.10118.3.0.55", name)
+    || sameName(b"mdc2", name)
+    || sameName(b"rsa-mdc2", name)
+    || sameName(b"mdc2withrsa", name)
+    || sameName(b"2.5.8.3.101", name)
+}
+
+/// Returns the output length in bytes. For SHAKE128 and SHAKE256 it is the default length, 16
+/// and 32 bytes, as OpenSSL reports it.
+pub fn digestLength(algorithm: Algorithm) -> usize {
+  return match algorithm {
+    Algorithm.Md5 => 16
+    Algorithm.Md5Sha1 => 36
+    Algorithm.Sha1 => 20
+    Algorithm.Ripemd160 => 20
+    Algorithm.Blake2b512 => 64
+    Algorithm.Blake2s256 => 32
+    Algorithm.Sha224 => 28
+    Algorithm.Sha256 => 32
+    Algorithm.Sha384 => 48
+    Algorithm.Sha512 => 64
+    Algorithm.Sha512_224 => 28
+    Algorithm.Sha512_256 => 32
+    Algorithm.Sha3_224 => 28
+    Algorithm.Sha3_256 => 32
+    Algorithm.Sha3_384 => 48
+    Algorithm.Sha3_512 => 64
+    Algorithm.Sm3 => 32
+    Algorithm.Shake128 => 16
+    Algorithm.Shake256 => 32
+  }
+}
+
+/// The newline-separated names `crypto.getHashes()` lists, as Node lists them.
+pub const HASH_NAMES: &'static [u8] = b"RSA-MD5\nRSA-RIPEMD160\nRSA-SHA1\nRSA-SHA1-2\nRSA-SHA224\nRSA-SHA256\nRSA-SHA3-224\nRSA-SHA3-256\nRSA-SHA3-384\nRSA-SHA3-512\nRSA-SHA384\nRSA-SHA512\nRSA-SHA512/224\nRSA-SHA512/256\nRSA-SM3\nblake2b512\nblake2s256\nid-rsassa-pkcs1-v1_5-with-sha3-224\nid-rsassa-pkcs1-v1_5-with-sha3-256\nid-rsassa-pkcs1-v1_5-with-sha3-384\nid-rsassa-pkcs1-v1_5-with-sha3-512\nmd5\nmd5-sha1\nmd5WithRSAEncryption\nripemd\nripemd160\nripemd160WithRSA\nrmd160\nsha1\nsha1WithRSAEncryption\nsha224\nsha224WithRSAEncryption\nsha256\nsha256WithRSAEncryption\nsha3-224\nsha3-256\nsha3-384\nsha3-512\nsha384\nsha384WithRSAEncryption\nsha512\nsha512-224\nsha512-224WithRSAEncryption\nsha512-256\nsha512-256WithRSAEncryption\nsha512WithRSAEncryption\nshake128\nshake256\nsm3\nsm3WithRSAEncryption\nssl3-md5\nssl3-sha1\n"
+
+/// A streaming hash in progress, or `Finished` once its digest was taken.
+pub union HashState {
+  Md5 { state: Md5 },
+  Md5Sha1 { state: Md5Sha1 },
+  Sha1 { state: Sha1 },
+  Ripemd160 { state: Ripemd160 },
+  Blake2b512 { state: Blake2b512 },
+  Blake2s256 { state: Blake2s256 },
+  Sha224 { state: Sha224 },
+  Sha256 { state: Sha256 },
+  Sha384 { state: Sha384 },
+  Sha512 { state: Sha512 },
+  Sha512_224 { state: Sha512_224 },
+  Sha512_256 { state: Sha512_256 },
+  Sha3_224 { state: Sha3_224 },
+  Sha3_256 { state: Sha3_256 },
+  Sha3_384 { state: Sha3_384 },
+  Sha3_512 { state: Sha3_512 },
+  Sm3 { state: Sm3 },
+  Shake128 { state: Shake128 },
+  Shake256 { state: Shake256 },
+  Finished,
+}
+
+impl HashState {
+  /// Returns the state of an empty message.
+  pub fn make(algorithm: Algorithm) -> HashState {
+    return match algorithm {
+      Algorithm.Md5 => HashState.Md5 { state: Md5.make() }
+      Algorithm.Md5Sha1 => HashState.Md5Sha1 { state: Md5Sha1.make() }
+      Algorithm.Sha1 => HashState.Sha1 { state: Sha1.make() }
+      Algorithm.Ripemd160 => HashState.Ripemd160 { state: Ripemd160.make() }
+      Algorithm.Blake2b512 => HashState.Blake2b512 { state: Blake2b512.make() }
+      Algorithm.Blake2s256 => HashState.Blake2s256 { state: Blake2s256.make() }
+      Algorithm.Sha224 => HashState.Sha224 { state: Sha224.make() }
+      Algorithm.Sha256 => HashState.Sha256 { state: Sha256.make() }
+      Algorithm.Sha384 => HashState.Sha384 { state: Sha384.make() }
+      Algorithm.Sha512 => HashState.Sha512 { state: Sha512.make() }
+      Algorithm.Sha512_224 => HashState.Sha512_224 { state: Sha512_224.make() }
+      Algorithm.Sha512_256 => HashState.Sha512_256 { state: Sha512_256.make() }
+      Algorithm.Sha3_224 => HashState.Sha3_224 { state: Sha3_224.make() }
+      Algorithm.Sha3_256 => HashState.Sha3_256 { state: Sha3_256.make() }
+      Algorithm.Sha3_384 => HashState.Sha3_384 { state: Sha3_384.make() }
+      Algorithm.Sha3_512 => HashState.Sha3_512 { state: Sha3_512.make() }
+      Algorithm.Sm3 => HashState.Sm3 { state: Sm3.make() }
+      Algorithm.Shake128 => HashState.Shake128 { state: Shake128.make() }
+      Algorithm.Shake256 => HashState.Shake256 { state: Shake256.make() }
+    }
+  }
+
+  /// Adds `bytes` to the message. It does nothing once the digest was taken.
+  pub fn update(self: &mut Self, bytes: &[u8]) -> () {
+    match &mut self.* {
+      HashState.Md5 { state } => state.update(bytes)
+      HashState.Md5Sha1 { state } => state.update(bytes)
+      HashState.Sha1 { state } => state.update(bytes)
+      HashState.Ripemd160 { state } => state.update(bytes)
+      HashState.Blake2b512 { state } => state.update(bytes)
+      HashState.Blake2s256 { state } => state.update(bytes)
+      HashState.Sha224 { state } => state.update(bytes)
+      HashState.Sha256 { state } => state.update(bytes)
+      HashState.Sha384 { state } => state.update(bytes)
+      HashState.Sha512 { state } => state.update(bytes)
+      HashState.Sha512_224 { state } => state.update(bytes)
+      HashState.Sha512_256 { state } => state.update(bytes)
+      HashState.Sha3_224 { state } => state.update(bytes)
+      HashState.Sha3_256 { state } => state.update(bytes)
+      HashState.Sha3_384 { state } => state.update(bytes)
+      HashState.Sha3_512 { state } => state.update(bytes)
+      HashState.Sm3 { state } => state.update(bytes)
+      HashState.Shake128 { state } => state.update(bytes)
+      HashState.Shake256 { state } => state.update(bytes)
+      HashState.Finished => ()
+    }
+  }
+
+  /// Returns an independent copy, or `Finished` for a finished state.
+  pub fn copy(self: &Self) -> HashState {
+    return match &self.* {
+      HashState.Md5 { state } => HashState.Md5 { state: state.copy() }
+      HashState.Md5Sha1 { state } => HashState.Md5Sha1 { state: state.copy() }
+      HashState.Sha1 { state } => HashState.Sha1 { state: state.copy() }
+      HashState.Ripemd160 { state } => HashState.Ripemd160 { state: state.copy() }
+      HashState.Blake2b512 { state } => HashState.Blake2b512 { state: state.copy() }
+      HashState.Blake2s256 { state } => HashState.Blake2s256 { state: state.copy() }
+      HashState.Sha224 { state } => HashState.Sha224 { state: state.copy() }
+      HashState.Sha256 { state } => HashState.Sha256 { state: state.copy() }
+      HashState.Sha384 { state } => HashState.Sha384 { state: state.copy() }
+      HashState.Sha512 { state } => HashState.Sha512 { state: state.copy() }
+      HashState.Sha512_224 { state } => HashState.Sha512_224 { state: state.copy() }
+      HashState.Sha512_256 { state } => HashState.Sha512_256 { state: state.copy() }
+      HashState.Sha3_224 { state } => HashState.Sha3_224 { state: state.copy() }
+      HashState.Sha3_256 { state } => HashState.Sha3_256 { state: state.copy() }
+      HashState.Sha3_384 { state } => HashState.Sha3_384 { state: state.copy() }
+      HashState.Sha3_512 { state } => HashState.Sha3_512 { state: state.copy() }
+      HashState.Sm3 { state } => HashState.Sm3 { state: state.copy() }
+      HashState.Shake128 { state } => HashState.Shake128 { state: state.copy() }
+      HashState.Shake256 { state } => HashState.Shake256 { state: state.copy() }
+      HashState.Finished => HashState.Finished
+    }
+  }
+
+  /// Whether the digest was already taken.
+  pub fn finished(self: &Self) -> bool { return match &self.* { HashState.Finished => true _ => false } }
+
+  /// Writes the digest to `output` and returns its length. A fixed-length hash writes
+  /// [`digestLength`] bytes, so `output` must hold at least 64. SHAKE fills all of `output`.
+  pub fn finishInto(self: Self, output: &mut [u8]) -> usize {
+    return match move self {
+      HashState.Md5 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Md5Sha1 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha1 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Ripemd160 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Blake2b512 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Blake2s256 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha224 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha256 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha384 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha512 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha512_224 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha512_256 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha3_224 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha3_256 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha3_384 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sha3_512 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Sm3 { state } => { let length = state.digestLength() state.finishInto(move output) length }
+      HashState.Shake128 { state } => { let length = output.length state.finishInto(move output) length }
+      HashState.Shake256 { state } => { let length = output.length state.finishInto(move output) length }
+      HashState.Finished => 0
+    }
+  }
+}
+
+/// An HMAC in progress, or `Finished` once its tag was taken.
+pub union MacState {
+  Md5 { state: Hmac<Md5> },
+  Md5Sha1 { state: Hmac<Md5Sha1> },
+  Sha1 { state: Hmac<Sha1> },
+  Ripemd160 { state: Hmac<Ripemd160> },
+  Blake2b512 { state: Hmac<Blake2b512> },
+  Blake2s256 { state: Hmac<Blake2s256> },
+  Sha224 { state: Hmac<Sha224> },
+  Sha256 { state: Hmac<Sha256> },
+  Sha384 { state: Hmac<Sha384> },
+  Sha512 { state: Hmac<Sha512> },
+  Sha512_224 { state: Hmac<Sha512_224> },
+  Sha512_256 { state: Hmac<Sha512_256> },
+  Sha3_224 { state: Hmac<Sha3_224> },
+  Sha3_256 { state: Hmac<Sha3_256> },
+  Sha3_384 { state: Hmac<Sha3_384> },
+  Sha3_512 { state: Hmac<Sha3_512> },
+  Sm3 { state: Hmac<Sm3> },
+  Finished,
+}
+
+impl MacState {
+  /// Returns an HMAC keyed with `key`, or none for SHAKE, which HMAC cannot use.
+  pub fn make(algorithm: Algorithm, key: &[u8]) -> Option<MacState> {
+    return match algorithm {
+      Algorithm.Md5 => Option<MacState>.some(MacState.Md5 { state: Hmac<Md5>.make(key) })
+      Algorithm.Md5Sha1 => Option<MacState>.some(MacState.Md5Sha1 { state: Hmac<Md5Sha1>.make(key) })
+      Algorithm.Sha1 => Option<MacState>.some(MacState.Sha1 { state: Hmac<Sha1>.make(key) })
+      Algorithm.Ripemd160 => Option<MacState>.some(MacState.Ripemd160 { state: Hmac<Ripemd160>.make(key) })
+      Algorithm.Blake2b512 => Option<MacState>.some(MacState.Blake2b512 { state: Hmac<Blake2b512>.make(key) })
+      Algorithm.Blake2s256 => Option<MacState>.some(MacState.Blake2s256 { state: Hmac<Blake2s256>.make(key) })
+      Algorithm.Sha224 => Option<MacState>.some(MacState.Sha224 { state: Hmac<Sha224>.make(key) })
+      Algorithm.Sha256 => Option<MacState>.some(MacState.Sha256 { state: Hmac<Sha256>.make(key) })
+      Algorithm.Sha384 => Option<MacState>.some(MacState.Sha384 { state: Hmac<Sha384>.make(key) })
+      Algorithm.Sha512 => Option<MacState>.some(MacState.Sha512 { state: Hmac<Sha512>.make(key) })
+      Algorithm.Sha512_224 => Option<MacState>.some(MacState.Sha512_224 { state: Hmac<Sha512_224>.make(key) })
+      Algorithm.Sha512_256 => Option<MacState>.some(MacState.Sha512_256 { state: Hmac<Sha512_256>.make(key) })
+      Algorithm.Sha3_224 => Option<MacState>.some(MacState.Sha3_224 { state: Hmac<Sha3_224>.make(key) })
+      Algorithm.Sha3_256 => Option<MacState>.some(MacState.Sha3_256 { state: Hmac<Sha3_256>.make(key) })
+      Algorithm.Sha3_384 => Option<MacState>.some(MacState.Sha3_384 { state: Hmac<Sha3_384>.make(key) })
+      Algorithm.Sha3_512 => Option<MacState>.some(MacState.Sha3_512 { state: Hmac<Sha3_512>.make(key) })
+      Algorithm.Sm3 => Option<MacState>.some(MacState.Sm3 { state: Hmac<Sm3>.make(key) })
+      _ => Option<MacState>.none()
+    }
+  }
+
+  /// Adds `bytes` to the message. It does nothing once the tag was taken.
+  pub fn update(self: &mut Self, bytes: &[u8]) -> () {
+    match &mut self.* {
+      MacState.Md5 { state } => state.update(bytes)
+      MacState.Md5Sha1 { state } => state.update(bytes)
+      MacState.Sha1 { state } => state.update(bytes)
+      MacState.Ripemd160 { state } => state.update(bytes)
+      MacState.Blake2b512 { state } => state.update(bytes)
+      MacState.Blake2s256 { state } => state.update(bytes)
+      MacState.Sha224 { state } => state.update(bytes)
+      MacState.Sha256 { state } => state.update(bytes)
+      MacState.Sha384 { state } => state.update(bytes)
+      MacState.Sha512 { state } => state.update(bytes)
+      MacState.Sha512_224 { state } => state.update(bytes)
+      MacState.Sha512_256 { state } => state.update(bytes)
+      MacState.Sha3_224 { state } => state.update(bytes)
+      MacState.Sha3_256 { state } => state.update(bytes)
+      MacState.Sha3_384 { state } => state.update(bytes)
+      MacState.Sha3_512 { state } => state.update(bytes)
+      MacState.Sm3 { state } => state.update(bytes)
+      MacState.Finished => ()
+    }
+  }
+
+  /// Writes the tag to `output`, which must hold at least 64 bytes, and returns its length.
+  pub fn finishInto(self: Self, output: &mut [u8]) -> usize {
+    return match move self {
+      MacState.Md5 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Md5Sha1 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha1 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Ripemd160 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Blake2b512 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Blake2s256 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha224 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha256 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha384 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha512 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha512_224 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha512_256 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha3_224 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha3_256 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha3_384 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sha3_512 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Sm3 { state } => { let length = state.tagLength() state.finishInto(move output) length }
+      MacState.Finished => 0
+    }
+  }
+}
+
+/// Fills `output` with PBKDF2-HMAC of `password` and `salt`. It returns false for SHAKE and for
+/// parameters PBKDF2 rejects.
+pub fn pbkdf2(algorithm: Algorithm, password: &[u8], salt: &[u8], iterations: u32, output: &mut [u8]) -> bool {
+  let derived = match algorithm {
+    Algorithm.Md5 => Pbkdf2.derive<Md5>(password, salt, iterations, move output)
+    Algorithm.Md5Sha1 => Pbkdf2.derive<Md5Sha1>(password, salt, iterations, move output)
+    Algorithm.Sha1 => Pbkdf2.derive<Sha1>(password, salt, iterations, move output)
+    Algorithm.Ripemd160 => Pbkdf2.derive<Ripemd160>(password, salt, iterations, move output)
+    Algorithm.Blake2b512 => Pbkdf2.derive<Blake2b512>(password, salt, iterations, move output)
+    Algorithm.Blake2s256 => Pbkdf2.derive<Blake2s256>(password, salt, iterations, move output)
+    Algorithm.Sha224 => Pbkdf2.derive<Sha224>(password, salt, iterations, move output)
+    Algorithm.Sha256 => Pbkdf2.derive<Sha256>(password, salt, iterations, move output)
+    Algorithm.Sha384 => Pbkdf2.derive<Sha384>(password, salt, iterations, move output)
+    Algorithm.Sha512 => Pbkdf2.derive<Sha512>(password, salt, iterations, move output)
+    Algorithm.Sha512_224 => Pbkdf2.derive<Sha512_224>(password, salt, iterations, move output)
+    Algorithm.Sha512_256 => Pbkdf2.derive<Sha512_256>(password, salt, iterations, move output)
+    Algorithm.Sha3_224 => Pbkdf2.derive<Sha3_224>(password, salt, iterations, move output)
+    Algorithm.Sha3_256 => Pbkdf2.derive<Sha3_256>(password, salt, iterations, move output)
+    Algorithm.Sha3_384 => Pbkdf2.derive<Sha3_384>(password, salt, iterations, move output)
+    Algorithm.Sha3_512 => Pbkdf2.derive<Sha3_512>(password, salt, iterations, move output)
+    Algorithm.Sm3 => Pbkdf2.derive<Sm3>(password, salt, iterations, move output)
+    _ => { return false }
+  }
+  return match move derived { Result<(), Pbkdf2Error>.Success { .. } => true Result<(), Pbkdf2Error>.Failure { .. } => false }
+}
+
+/// Fills `output` with HKDF of `key`, `salt` and `info`. It returns false for SHAKE and for an
+/// output longer than 255 digests.
+pub fn hkdf(algorithm: Algorithm, key: &[u8], salt: &[u8], info: &[u8], output: &mut [u8]) -> bool {
+  let derived = match algorithm {
+    Algorithm.Md5 => Hkdf.derive<Md5>(salt, key, info, move output)
+    Algorithm.Md5Sha1 => Hkdf.derive<Md5Sha1>(salt, key, info, move output)
+    Algorithm.Sha1 => Hkdf.derive<Sha1>(salt, key, info, move output)
+    Algorithm.Ripemd160 => Hkdf.derive<Ripemd160>(salt, key, info, move output)
+    Algorithm.Blake2b512 => Hkdf.derive<Blake2b512>(salt, key, info, move output)
+    Algorithm.Blake2s256 => Hkdf.derive<Blake2s256>(salt, key, info, move output)
+    Algorithm.Sha224 => Hkdf.derive<Sha224>(salt, key, info, move output)
+    Algorithm.Sha256 => Hkdf.derive<Sha256>(salt, key, info, move output)
+    Algorithm.Sha384 => Hkdf.derive<Sha384>(salt, key, info, move output)
+    Algorithm.Sha512 => Hkdf.derive<Sha512>(salt, key, info, move output)
+    Algorithm.Sha512_224 => Hkdf.derive<Sha512_224>(salt, key, info, move output)
+    Algorithm.Sha512_256 => Hkdf.derive<Sha512_256>(salt, key, info, move output)
+    Algorithm.Sha3_224 => Hkdf.derive<Sha3_224>(salt, key, info, move output)
+    Algorithm.Sha3_256 => Hkdf.derive<Sha3_256>(salt, key, info, move output)
+    Algorithm.Sha3_384 => Hkdf.derive<Sha3_384>(salt, key, info, move output)
+    Algorithm.Sha3_512 => Hkdf.derive<Sha3_512>(salt, key, info, move output)
+    Algorithm.Sm3 => Hkdf.derive<Sm3>(salt, key, info, move output)
+    _ => { return false }
+  }
+  return match move derived { Result<(), OutputTooLongError>.Success { .. } => true Result<(), OutputTooLongError>.Failure { .. } => false }
+}
