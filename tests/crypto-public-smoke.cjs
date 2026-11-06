@@ -24,7 +24,7 @@ async function main() {
   assert.deepEqual(gcm, { mode: 'gcm', name: 'id-aes128-gcm', nid: 895, blockSize: 1, ivLength: 12, keyLength: 16 });
   assert.equal(crypto.getCipherInfo(gcm.nid).name, gcm.name);
   assert.equal(crypto.getCipherInfo('aes-128-gcm', { keyLength: 15 }), undefined);
-  assert.equal(crypto.getCipherInfo('aes-128-gcm', { ivLength: 0 }).ivLength, undefined);
+  assert.equal(crypto.getCipherInfo('aes-128-gcm', { ivLength: 0 }), undefined);
   assert.equal(crypto.getCipherInfo('aes-128-ccm', { ivLength: 6 }), undefined);
   assert.equal(crypto.getCipherInfo('aes-128-ccm', { ivLength: 7 }).ivLength, 7);
   assert.equal(crypto.getCipherInfo('no-such-cipher'), undefined);

@@ -18,7 +18,8 @@ function packed(value) { const b = bytes(value); return b.byteOffset === 0 && b.
 function normalize(e) {
   if (!(e instanceof Error)) e = new Error(String(e));
   const match = /^(ERR_[A-Z0-9_]+):\s*/.exec(e.message);
-  if (match) { e.code = match[1]; e.message = e.message.slice(match[0].length); }
+  // ERR_NONE marks native errors that Node reports without a code.
+  if (match) { e.message = e.message.slice(match[0].length); if (match[1] === 'ERR_NONE') return e; e.code = match[1]; }
   else if (!e.code) e.code = 'ERR_OSSL_CRYPTO_OPERATION_FAILED';
   const openssl = /^error:([0-9a-f]+):([^:]*):[^:]*:(.*)$/i.exec(e.message);
   if (openssl) { e.library = openssl[2]; e.reason = openssl[3]; e.opensslErrorStack = [e.message]; const reason = openssl[3].toUpperCase().replace(/[^A-Z0-9]+/g, '_'); if (reason && (!match || match[1] === 'ERR_OSSL_CRYPTO_OPERATION_FAILED')) e.code = `ERR_OSSL_${reason}`; }

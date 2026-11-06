@@ -72,15 +72,13 @@ function getCipherInfo(nameOrNid, options) {
 function secureHeapUsed() { const total = 0, used = call('secureHeapUsed', []); return { total, used, utilization: used / total, min: 2 }; }
 function setEngine(id, flags) { name(id, 'id'); if (flags && typeof flags !== 'number') throw invalid('flags', 'a number'); flags = flags >>> 0; if (!call('setEngine', [id, flags || 65535])) throw error('ERR_CRYPTO_ENGINE_UNKNOWN', `Engine "${id}" was not found`); }
 function timingSafeEqual(a, b) { a = binary(a); b = binary(b); if (a.length !== b.length) throw error('ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH', 'Input buffers must have the same byte length', RangeError); return !!call('equal', [packed(a), packed(b)]); }
-// Node reports an unknown hash name with a plain Error that has no code.
-function hashCall(op, args) { try { return call(op, args); } catch (e) { if (e.code === 'ERR_CRYPTO_INVALID_DIGEST') { const plain = new Error(e.message); throw plain; } throw e; } }
 class Hash extends Transform {
   constructor(algorithm, options = {}, existing) {
     super(options); this._algorithm = name(algorithm); this._xof = /^shake(?:128|256)$/i.test(algorithm);
     this._length = options.outputLength === undefined ? -1 : integer(options.outputLength, 'outputLength');
-    if (!this._xof && this._length !== -1) { if (this._length !== hashCall('hashSize', [algorithm])) throw error('ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH', 'Invalid digest output length'); this._length = -1; }
+    if (!this._xof && this._length !== -1) { if (this._length !== call('hashSize', [algorithm])) throw error('ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH', 'Invalid digest output length'); this._length = -1; }
     if (this._xof && this._length === -1) this._length = /128$/.test(algorithm) ? 16 : 32;
-    attach(this, existing === undefined ? hashCall('hashCreate', [algorithm]) : existing); this._finalized = false;
+    attach(this, existing === undefined ? call('hashCreate', [algorithm]) : existing); this._finalized = false;
   }
   update(data, encoding) { if (this._finalized) throw error('ERR_CRYPTO_HASH_FINALIZED', 'Digest already called'); call('hashUpdate', [handle(this), packed(bytes(data, encoding))]); return this; }
   digest(encoding) { if (this._finalized) throw error('ERR_CRYPTO_HASH_FINALIZED', 'Digest already called'); this._finalized = true; try { return output(call('hashFinal', [handle(this), this._length]), encoding); } finally { release(this); } }
@@ -109,10 +107,10 @@ function hash(algorithm, data, encoding = 'hex') { return createHash(algorithm).
 class Cipheriv extends Transform {
   constructor(algorithm, key, iv, options = {}, decrypt = false) {
     super(options); name(algorithm); if (key instanceof KeyObject) { if (key.type !== 'secret') throw error('ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE', 'Cipher requires a secret key'); key = key.export(); }
-    this._decrypt = decrypt; this._aead = /-(gcm|ccm|ocb)$|^chacha20-poly1305$/i.test(algorithm); this._ccm = /-ccm$/i.test(algorithm); this._tagLength = options.authTagLength === undefined ? 16 : integer(options.authTagLength, 'authTagLength', 1, 16);
-    if (this._ccm && options.authTagLength === undefined) throw error('ERR_CRYPTO_INVALID_AUTH_TAG', 'authTagLength is required for CCM');
-    if (/-gcm$/i.test(algorithm) && ![4, 8, 12, 13, 14, 15, 16].includes(this._tagLength)) throw error('ERR_CRYPTO_INVALID_AUTH_TAG', 'Invalid GCM authentication tag length');
-    if (this._ccm && ![4, 6, 8, 10, 12, 14, 16].includes(this._tagLength)) throw error('ERR_CRYPTO_INVALID_AUTH_TAG', 'Invalid CCM authentication tag length');
+    this._decrypt = decrypt; this._aead = /-(gcm|ccm|ocb)$|^chacha20-poly1305$/i.test(algorithm); this._ccm = /-ccm$/i.test(algorithm);
+    if ((this._ccm || /-ocb$/i.test(algorithm)) && options.authTagLength === undefined) throw error('ERR_CRYPTO_INVALID_AUTH_TAG', `authTagLength required for ${algorithm}`);
+    this._tagLength = options.authTagLength === undefined ? 16 : integer(options.authTagLength, 'authTagLength', 0);
+    if (this._aead && !(/-gcm$/i.test(algorithm) ? [4, 8, 12, 13, 14, 15, 16] : this._ccm ? [4, 6, 8, 10, 12, 14, 16] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]).includes(this._tagLength)) throw error('ERR_CRYPTO_INVALID_AUTH_TAG', `Invalid authentication tag length: ${this._tagLength}`);
     this._tagSpecified = options.authTagLength !== undefined; this._finished = false; this._tag = undefined; this._decoder = undefined; this._outputEncoding = undefined;
     attach(this, call('cipherCreate', [algorithm, packed(bytes(key, options.encoding)), packed(iv === null ? Buffer.alloc(0) : bytes(iv, options.encoding)), decrypt ? 0 : 1, this._tagLength, /^(?:chacha20-poly1305)$|-(?:gcm|ccm|ocb)$/i.test(algorithm) ? 1 : 0]));
   }

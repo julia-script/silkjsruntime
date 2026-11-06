@@ -17,27 +17,6 @@ pub unsafe extern "C" fn EVP_MD_CTX_free(ctx: ?*mut u8) -> ()
 pub unsafe extern "C" fn EVP_DigestInit_ex(ctx: ?*mut u8, md: ?*mut u8, implementation: ?*mut u8) -> i32
 @foreign(noCapture: .("ctx", "key"))
 pub unsafe extern "C" fn HMAC_Init_ex(ctx: ?*mut u8, key: ?*mut u8, n: i32, md: ?*mut u8, implementation: ?*mut u8) -> i32
-@foreign(noCapture: .("name"))
-pub unsafe extern "C" fn EVP_get_cipherbyname(name: ?*mut u8) -> ?*mut u8
-@foreign(noCapture: .("cipher"))
-pub unsafe extern "C" fn EVP_CIPHER_get_key_length(cipher: ?*mut u8) -> i32
-@foreign(noCapture: .("cipher"))
-pub unsafe extern "C" fn EVP_CIPHER_get_iv_length(cipher: ?*mut u8) -> i32
-@foreign(noCapture: .("cipher"))
-pub unsafe extern "C" fn EVP_CIPHER_get_mode(cipher: ?*mut u8) -> i32
-pub unsafe extern "C" fn EVP_CIPHER_CTX_new() -> ?*mut u8
-@foreign(noCapture: .("ctx"))
-pub unsafe extern "C" fn EVP_CIPHER_CTX_free(ctx: ?*mut u8) -> ()
-@foreign(noCapture: .("ctx"))
-pub unsafe extern "C" fn EVP_CIPHER_CTX_set_padding(ctx: ?*mut u8, padding: i32) -> i32
-@foreign(noCapture: .("ctx", "p"))
-pub unsafe extern "C" fn EVP_CIPHER_CTX_ctrl(ctx: ?*mut u8, op: i32, arg: i32, p: ?*mut u8) -> i32
-@foreign(noCapture: .("ctx", "key", "iv"))
-pub unsafe extern "C" fn EVP_CipherInit_ex(ctx: ?*mut u8, cipher: ?*mut u8, implementation: ?*mut u8, key: ?*mut u8, iv: ?*mut u8, enc: i32) -> i32
-@foreign(noCapture: .("ctx", "out", "n", "input"))
-pub unsafe extern "C" fn EVP_CipherUpdate(ctx: ?*mut u8, out: ?*mut u8, n: *mut i32, input: ?*mut u8, len: i32) -> i32
-@foreign(noCapture: .("ctx", "out", "n"))
-pub unsafe extern "C" fn EVP_CipherFinal_ex(ctx: ?*mut u8, out: ?*mut u8, n: *mut i32) -> i32
 @foreign(noCapture: .("libctx", "name", "props"))
 pub unsafe extern "C" fn EVP_PKEY_CTX_new_from_name(libctx: ?*mut u8, name: ?*mut u8, props: ?*mut u8) -> ?*mut u8
 pub unsafe extern "C" fn EVP_PKEY_CTX_new(key: ?*mut u8, implementation: ?*mut u8) -> ?*mut u8
@@ -209,10 +188,7 @@ pub unsafe extern "C" fn OSSL_DECODER_from_bio(ctx: ?*mut u8, bio: ?*mut u8) -> 
 pub unsafe extern "C" fn CRYPTO_malloc(size: usize, file: ?*mut u8, line: i32) -> ?*mut u8
 @foreign(noCapture: .("p", "file"))
 pub unsafe extern "C" fn CRYPTO_free(p: ?*mut u8, file: ?*mut u8, line: i32) -> ()
-pub type AlgorithmCallback = extern "C" fn(?*mut u8, ?*mut u8, ?*mut u8, ?*mut u8) -> ()
 pub extern "C" struct Curve { pub nid: i32, pub comment: ?*const u8 }
-@callbacks("cb")
-pub unsafe extern "C" fn EVP_CIPHER_do_all_sorted(cb: AlgorithmCallback, data: ?*mut u8) -> ()
 @foreign(noCapture: .("curves"))
 pub unsafe extern "C" fn EC_get_builtin_curves(curves: ?*mut Curve, count: usize) -> usize
 pub unsafe extern "C" fn OBJ_nid2sn(nid: i32) -> ?*mut u8
@@ -253,12 +229,6 @@ pub unsafe extern "C" fn BN_new() -> ?*mut u8
 pub unsafe extern "C" fn BN_is_prime_ex(value: ?*mut u8, checks: i32, ctx: ?*mut u8, callback: ?*mut u8) -> i32
 @foreign(noCapture: .("value", "add", "rem", "callback"))
 pub unsafe extern "C" fn BN_generate_prime_ex(value: ?*mut u8, bits: i32, safe: i32, add: ?*mut u8, rem: ?*mut u8, callback: ?*mut u8) -> i32
-@foreign(noCapture: .("cipher"))
-pub unsafe extern "C" fn EVP_CIPHER_get_nid(cipher: ?*mut u8) -> i32
-@foreign(noCapture: .("cipher"))
-pub unsafe extern "C" fn EVP_CIPHER_get_block_size(cipher: ?*mut u8) -> i32
-@foreign(noCapture: .("ctx"))
-pub unsafe extern "C" fn EVP_CIPHER_CTX_set_key_length(ctx: ?*mut u8, n: i32) -> i32
 @foreign(noCapture: .("ctx"))
 pub unsafe extern "C" fn EVP_PKEY_sign_init(ctx: ?*mut u8) -> i32
 @foreign(noCapture: .("ctx"))
@@ -275,13 +245,5 @@ pub unsafe extern "C" fn ENGINE_by_id(id: ?*mut u8) -> ?*mut u8
 pub unsafe extern "C" fn ENGINE_set_default(engine: ?*mut u8, flags: u32) -> i32
 @foreign(noCapture: .("engine"))
 pub unsafe extern "C" fn ENGINE_free(engine: ?*mut u8) -> i32
-@foreign(noCapture: .("ctx", "name", "properties"))
-pub unsafe extern "C" fn EVP_CIPHER_fetch(ctx: ?*mut u8, name: ?*mut u8, properties: ?*mut u8) -> ?*mut u8
-@foreign(noCapture: .("cipher"))
-pub unsafe extern "C" fn EVP_CIPHER_free(cipher: ?*mut u8) -> ()
-@foreign(noCapture: .("cipher"))
-pub unsafe extern "C" fn EVP_CIPHER_get0_name(cipher: ?*mut u8) -> ?*mut u8
 @foreign(noCapture: .("a", "b"))
 pub unsafe extern "C" fn BN_cmp(a: ?*mut u8, b: ?*mut u8) -> i32
-@foreign(noCapture: .("ctx"))
-pub unsafe extern "C" fn EVP_CIPHER_CTX_set_flags(ctx: ?*mut u8, flags: i32) -> ()

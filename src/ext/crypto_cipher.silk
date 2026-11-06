@@ -1,0 +1,975 @@
+//! Node's cipher table and the cipher states behind `crypto.createCipheriv`, on silk.crypto.
+//!
+//! The names, NIDs and lengths are what Node 22 with OpenSSL's default provider accepts and
+//! reports. Each update and finish writes the bytes OpenSSL would write for the same calls, so the
+//! split of the output across `update` and `final` matches Node.
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.collections.slice { Slice }
+import silk.num.u8
+import silk.num.u32
+import silk.num.i32
+import silk.num.i64
+import silk.num.usize
+import silk.crypto.aes { AesEcb, AesCbc, AesCtr, AesCfb, AesCfb8, AesCfb1, AesOfb, AesError }
+import silk.crypto.aes_gcm { AesGcmEncryptor, AesGcmDecryptor, AesGcmError }
+import silk.crypto.aes_ccm { AesCcm, AesCcmError }
+import silk.crypto.aes_ocb { AesOcbEncryptor, AesOcbDecryptor, AesOcbError }
+import silk.crypto.aes_xts { AesXts, AesXtsError }
+import silk.crypto.aes_wrap { AesKeyWrap, AesKeyWrapError }
+import silk.crypto.aria { Aria }
+import silk.crypto.camellia { Camellia }
+import silk.crypto.sm4 { Sm4 }
+import silk.crypto.des { TripleDes }
+import silk.crypto.block_cipher { BlockCipherError, Ecb, Cbc, Ctr, Cfb, Cfb8, Cfb1, Ofb }
+import silk.crypto.chacha20_poly1305 { ChaCha20, ChaCha20Error, ChaCha20Poly1305Encryptor, ChaCha20Poly1305Decryptor, AeadError }
+
+/// The block cipher or stream cipher under a Node cipher name.
+pub enum Family { Aes, Aria, Camellia, Sm4, TripleDes, ChaCha20, Legacy }
+
+/// How the cipher is used. `CbcHmac` is OpenSSL's stitched cipher, which without a MAC key is CBC
+/// without padding on whole blocks. `Legacy` names are known but live in OpenSSL's legacy provider.
+pub enum Mode { Ecb, Cbc, CbcHmac, Cfb, Cfb1, Cfb8, Ofb, Ctr, Gcm, Ccm, Ocb, Xts, Wrap, WrapPad, Des3Wrap, Stream, Poly1305, Legacy }
+
+/// What `crypto.getCipherInfo` reports for a cipher, and how to run it.
+pub struct Spec {
+  pub name: &'static [u8], pub nid: i32, pub family: Family, pub mode: Mode,
+  pub opensslMode: i32, pub blockSize: i32, pub keyLength: i32, pub ivLength: i32,
+}
+
+struct Name { text: &'static [u8], spec: u32 }
+
+const SPECS: [Spec; 140] = [
+  Spec { name: b"rc4", nid: 5, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 0, blockSize: 0, keyLength: 16, ivLength: 0 },
+  Spec { name: b"des-ecb", nid: 29, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 1, blockSize: 8, keyLength: 8, ivLength: 0 },
+  Spec { name: b"des-cfb", nid: 30, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 8, ivLength: 8 },
+  Spec { name: b"des-cbc", nid: 31, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 8, ivLength: 8 },
+  Spec { name: b"des-ede", nid: 32, family: Family.TripleDes, mode: Mode.Ecb, opensslMode: 1, blockSize: 8, keyLength: 16, ivLength: 0 },
+  Spec { name: b"des-ede3", nid: 33, family: Family.TripleDes, mode: Mode.Ecb, opensslMode: 1, blockSize: 8, keyLength: 24, ivLength: 0 },
+  Spec { name: b"idea-cbc", nid: 34, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 16, ivLength: 8 },
+  Spec { name: b"idea-cfb", nid: 35, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"idea-ecb", nid: 36, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 1, blockSize: 8, keyLength: 16, ivLength: 0 },
+  Spec { name: b"rc2-cbc", nid: 37, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 16, ivLength: 8 },
+  Spec { name: b"rc2-ecb", nid: 38, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 1, blockSize: 8, keyLength: 16, ivLength: 0 },
+  Spec { name: b"rc2-cfb", nid: 39, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"rc2-ofb", nid: 40, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"des-ede-cbc", nid: 43, family: Family.TripleDes, mode: Mode.Cbc, opensslMode: 2, blockSize: 8, keyLength: 16, ivLength: 8 },
+  Spec { name: b"des-ede3-cbc", nid: 44, family: Family.TripleDes, mode: Mode.Cbc, opensslMode: 2, blockSize: 8, keyLength: 24, ivLength: 8 },
+  Spec { name: b"des-ofb", nid: 45, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 4, blockSize: 1, keyLength: 8, ivLength: 8 },
+  Spec { name: b"idea-ofb", nid: 46, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"des-ede-cfb", nid: 60, family: Family.TripleDes, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"des-ede3-cfb", nid: 61, family: Family.TripleDes, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 8 },
+  Spec { name: b"des-ede-ofb", nid: 62, family: Family.TripleDes, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"des-ede3-ofb", nid: 63, family: Family.TripleDes, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 24, ivLength: 8 },
+  Spec { name: b"desx-cbc", nid: 80, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 24, ivLength: 8 },
+  Spec { name: b"bf-cbc", nid: 91, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 16, ivLength: 8 },
+  Spec { name: b"bf-ecb", nid: 92, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 1, blockSize: 8, keyLength: 16, ivLength: 0 },
+  Spec { name: b"bf-cfb", nid: 93, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"bf-ofb", nid: 94, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"rc4-40", nid: 97, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 0, blockSize: 0, keyLength: 5, ivLength: 0 },
+  Spec { name: b"rc2-40-cbc", nid: 98, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 5, ivLength: 8 },
+  Spec { name: b"cast5-cbc", nid: 108, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 16, ivLength: 8 },
+  Spec { name: b"cast5-ecb", nid: 109, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 1, blockSize: 8, keyLength: 16, ivLength: 0 },
+  Spec { name: b"cast5-cfb", nid: 110, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"cast5-ofb", nid: 111, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 8 },
+  Spec { name: b"rc2-64-cbc", nid: 166, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 8, keyLength: 8, ivLength: 8 },
+  Spec { name: b"id-smime-alg-cms3deswrap", nid: 246, family: Family.TripleDes, mode: Mode.Des3Wrap, opensslMode: 65538, blockSize: 8, keyLength: 24, ivLength: 0 },
+  Spec { name: b"aes-128-ecb", nid: 418, family: Family.Aes, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 16, ivLength: 0 },
+  Spec { name: b"aes-128-cbc", nid: 419, family: Family.Aes, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-128-ofb", nid: 420, family: Family.Aes, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-128-cfb", nid: 421, family: Family.Aes, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-192-ecb", nid: 422, family: Family.Aes, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 24, ivLength: 0 },
+  Spec { name: b"aes-192-cbc", nid: 423, family: Family.Aes, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aes-192-ofb", nid: 424, family: Family.Aes, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aes-192-cfb", nid: 425, family: Family.Aes, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aes-256-ecb", nid: 426, family: Family.Aes, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 32, ivLength: 0 },
+  Spec { name: b"aes-256-cbc", nid: 427, family: Family.Aes, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-256-ofb", nid: 428, family: Family.Aes, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-256-cfb", nid: 429, family: Family.Aes, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-128-cfb1", nid: 650, family: Family.Aes, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-192-cfb1", nid: 651, family: Family.Aes, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aes-256-cfb1", nid: 652, family: Family.Aes, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-128-cfb8", nid: 653, family: Family.Aes, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-192-cfb8", nid: 654, family: Family.Aes, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aes-256-cfb8", nid: 655, family: Family.Aes, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"des-cfb1", nid: 656, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 8, ivLength: 8 },
+  Spec { name: b"des-cfb8", nid: 657, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 8, ivLength: 8 },
+  Spec { name: b"des-ede3-cfb1", nid: 658, family: Family.TripleDes, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 8 },
+  Spec { name: b"des-ede3-cfb8", nid: 659, family: Family.TripleDes, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 8 },
+  Spec { name: b"camellia-128-cbc", nid: 751, family: Family.Camellia, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 16, ivLength: 16 },
+  Spec { name: b"camellia-192-cbc", nid: 752, family: Family.Camellia, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 24, ivLength: 16 },
+  Spec { name: b"camellia-256-cbc", nid: 753, family: Family.Camellia, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 32, ivLength: 16 },
+  Spec { name: b"camellia-128-ecb", nid: 754, family: Family.Camellia, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 16, ivLength: 0 },
+  Spec { name: b"camellia-192-ecb", nid: 755, family: Family.Camellia, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 24, ivLength: 0 },
+  Spec { name: b"camellia-256-ecb", nid: 756, family: Family.Camellia, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 32, ivLength: 0 },
+  Spec { name: b"camellia-128-cfb", nid: 757, family: Family.Camellia, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"camellia-192-cfb", nid: 758, family: Family.Camellia, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"camellia-256-cfb", nid: 759, family: Family.Camellia, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"camellia-128-cfb1", nid: 760, family: Family.Camellia, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"camellia-192-cfb1", nid: 761, family: Family.Camellia, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"camellia-256-cfb1", nid: 762, family: Family.Camellia, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"camellia-128-cfb8", nid: 763, family: Family.Camellia, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"camellia-192-cfb8", nid: 764, family: Family.Camellia, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"camellia-256-cfb8", nid: 765, family: Family.Camellia, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"camellia-128-ofb", nid: 766, family: Family.Camellia, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"camellia-192-ofb", nid: 767, family: Family.Camellia, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"camellia-256-ofb", nid: 768, family: Family.Camellia, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"seed-ecb", nid: 776, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 1, blockSize: 16, keyLength: 16, ivLength: 0 },
+  Spec { name: b"seed-cbc", nid: 777, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 2, blockSize: 16, keyLength: 16, ivLength: 16 },
+  Spec { name: b"seed-ofb", nid: 778, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"seed-cfb", nid: 779, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"id-aes128-wrap", nid: 788, family: Family.Aes, mode: Mode.Wrap, opensslMode: 65538, blockSize: 8, keyLength: 16, ivLength: 8 },
+  Spec { name: b"id-aes192-wrap", nid: 789, family: Family.Aes, mode: Mode.Wrap, opensslMode: 65538, blockSize: 8, keyLength: 24, ivLength: 8 },
+  Spec { name: b"id-aes256-wrap", nid: 790, family: Family.Aes, mode: Mode.Wrap, opensslMode: 65538, blockSize: 8, keyLength: 32, ivLength: 8 },
+  Spec { name: b"id-aes128-gcm", nid: 895, family: Family.Aes, mode: Mode.Gcm, opensslMode: 6, blockSize: 1, keyLength: 16, ivLength: 12 },
+  Spec { name: b"id-aes128-ccm", nid: 896, family: Family.Aes, mode: Mode.Ccm, opensslMode: 7, blockSize: 1, keyLength: 16, ivLength: 12 },
+  Spec { name: b"id-aes128-wrap-pad", nid: 897, family: Family.Aes, mode: Mode.WrapPad, opensslMode: 65538, blockSize: 8, keyLength: 16, ivLength: 4 },
+  Spec { name: b"id-aes192-gcm", nid: 898, family: Family.Aes, mode: Mode.Gcm, opensslMode: 6, blockSize: 1, keyLength: 24, ivLength: 12 },
+  Spec { name: b"id-aes192-ccm", nid: 899, family: Family.Aes, mode: Mode.Ccm, opensslMode: 7, blockSize: 1, keyLength: 24, ivLength: 12 },
+  Spec { name: b"id-aes192-wrap-pad", nid: 900, family: Family.Aes, mode: Mode.WrapPad, opensslMode: 65538, blockSize: 8, keyLength: 24, ivLength: 4 },
+  Spec { name: b"id-aes256-gcm", nid: 901, family: Family.Aes, mode: Mode.Gcm, opensslMode: 6, blockSize: 1, keyLength: 32, ivLength: 12 },
+  Spec { name: b"id-aes256-ccm", nid: 902, family: Family.Aes, mode: Mode.Ccm, opensslMode: 7, blockSize: 1, keyLength: 32, ivLength: 12 },
+  Spec { name: b"id-aes256-wrap-pad", nid: 903, family: Family.Aes, mode: Mode.WrapPad, opensslMode: 65538, blockSize: 8, keyLength: 32, ivLength: 4 },
+  Spec { name: b"aes-128-ctr", nid: 904, family: Family.Aes, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-192-ctr", nid: 905, family: Family.Aes, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aes-256-ctr", nid: 906, family: Family.Aes, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-128-xts", nid: 913, family: Family.Aes, mode: Mode.Xts, opensslMode: 65537, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-256-xts", nid: 914, family: Family.Aes, mode: Mode.Xts, opensslMode: 65537, blockSize: 1, keyLength: 64, ivLength: 16 },
+  Spec { name: b"rc4-hmac-md5", nid: 915, family: Family.Legacy, mode: Mode.Legacy, opensslMode: 0, blockSize: 0, keyLength: 16, ivLength: 0 },
+  Spec { name: b"aes-128-cbc-hmac-sha1", nid: 916, family: Family.Aes, mode: Mode.CbcHmac, opensslMode: 2, blockSize: 16, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-256-cbc-hmac-sha1", nid: 918, family: Family.Aes, mode: Mode.CbcHmac, opensslMode: 2, blockSize: 16, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-128-cbc-hmac-sha256", nid: 948, family: Family.Aes, mode: Mode.CbcHmac, opensslMode: 2, blockSize: 16, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aes-256-cbc-hmac-sha256", nid: 950, family: Family.Aes, mode: Mode.CbcHmac, opensslMode: 2, blockSize: 16, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aes-128-ocb", nid: 958, family: Family.Aes, mode: Mode.Ocb, opensslMode: 65539, blockSize: 16, keyLength: 16, ivLength: 12 },
+  Spec { name: b"aes-192-ocb", nid: 959, family: Family.Aes, mode: Mode.Ocb, opensslMode: 65539, blockSize: 16, keyLength: 24, ivLength: 12 },
+  Spec { name: b"aes-256-ocb", nid: 960, family: Family.Aes, mode: Mode.Ocb, opensslMode: 65539, blockSize: 16, keyLength: 32, ivLength: 12 },
+  Spec { name: b"camellia-128-ctr", nid: 963, family: Family.Camellia, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"camellia-192-ctr", nid: 967, family: Family.Camellia, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"camellia-256-ctr", nid: 971, family: Family.Camellia, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"chacha20-poly1305", nid: 1018, family: Family.ChaCha20, mode: Mode.Poly1305, opensslMode: 0, blockSize: 0, keyLength: 32, ivLength: 12 },
+  Spec { name: b"chacha20", nid: 1019, family: Family.ChaCha20, mode: Mode.Stream, opensslMode: 0, blockSize: 0, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aria-128-ecb", nid: 1065, family: Family.Aria, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 16, ivLength: 0 },
+  Spec { name: b"aria-128-cbc", nid: 1066, family: Family.Aria, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aria-128-cfb", nid: 1067, family: Family.Aria, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aria-128-ofb", nid: 1068, family: Family.Aria, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aria-128-ctr", nid: 1069, family: Family.Aria, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aria-192-ecb", nid: 1070, family: Family.Aria, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 24, ivLength: 0 },
+  Spec { name: b"aria-192-cbc", nid: 1071, family: Family.Aria, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aria-192-cfb", nid: 1072, family: Family.Aria, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aria-192-ofb", nid: 1073, family: Family.Aria, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aria-192-ctr", nid: 1074, family: Family.Aria, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aria-256-ecb", nid: 1075, family: Family.Aria, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 32, ivLength: 0 },
+  Spec { name: b"aria-256-cbc", nid: 1076, family: Family.Aria, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aria-256-cfb", nid: 1077, family: Family.Aria, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aria-256-ofb", nid: 1078, family: Family.Aria, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aria-256-ctr", nid: 1079, family: Family.Aria, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aria-128-cfb1", nid: 1080, family: Family.Aria, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aria-192-cfb1", nid: 1081, family: Family.Aria, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aria-256-cfb1", nid: 1082, family: Family.Aria, mode: Mode.Cfb1, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aria-128-cfb8", nid: 1083, family: Family.Aria, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"aria-192-cfb8", nid: 1084, family: Family.Aria, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 24, ivLength: 16 },
+  Spec { name: b"aria-256-cfb8", nid: 1085, family: Family.Aria, mode: Mode.Cfb8, opensslMode: 3, blockSize: 1, keyLength: 32, ivLength: 16 },
+  Spec { name: b"aria-128-ccm", nid: 1120, family: Family.Aria, mode: Mode.Ccm, opensslMode: 7, blockSize: 1, keyLength: 16, ivLength: 12 },
+  Spec { name: b"aria-192-ccm", nid: 1121, family: Family.Aria, mode: Mode.Ccm, opensslMode: 7, blockSize: 1, keyLength: 24, ivLength: 12 },
+  Spec { name: b"aria-256-ccm", nid: 1122, family: Family.Aria, mode: Mode.Ccm, opensslMode: 7, blockSize: 1, keyLength: 32, ivLength: 12 },
+  Spec { name: b"aria-128-gcm", nid: 1123, family: Family.Aria, mode: Mode.Gcm, opensslMode: 6, blockSize: 1, keyLength: 16, ivLength: 12 },
+  Spec { name: b"aria-192-gcm", nid: 1124, family: Family.Aria, mode: Mode.Gcm, opensslMode: 6, blockSize: 1, keyLength: 24, ivLength: 12 },
+  Spec { name: b"aria-256-gcm", nid: 1125, family: Family.Aria, mode: Mode.Gcm, opensslMode: 6, blockSize: 1, keyLength: 32, ivLength: 12 },
+  Spec { name: b"sm4-ecb", nid: 1133, family: Family.Sm4, mode: Mode.Ecb, opensslMode: 1, blockSize: 16, keyLength: 16, ivLength: 0 },
+  Spec { name: b"sm4-cbc", nid: 1134, family: Family.Sm4, mode: Mode.Cbc, opensslMode: 2, blockSize: 16, keyLength: 16, ivLength: 16 },
+  Spec { name: b"sm4-ofb", nid: 1135, family: Family.Sm4, mode: Mode.Ofb, opensslMode: 4, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"sm4-cfb", nid: 1137, family: Family.Sm4, mode: Mode.Cfb, opensslMode: 3, blockSize: 1, keyLength: 16, ivLength: 16 },
+  Spec { name: b"sm4-ctr", nid: 1139, family: Family.Sm4, mode: Mode.Ctr, opensslMode: 5, blockSize: 1, keyLength: 16, ivLength: 16 },
+]
+
+const NAMES: [Name; 256] = [
+  Name { text: b"0.3.4401.5.3.1.9.1", spec: 59 },
+  Name { text: b"0.3.4401.5.3.1.9.21", spec: 60 },
+  Name { text: b"0.3.4401.5.3.1.9.23", spec: 72 },
+  Name { text: b"0.3.4401.5.3.1.9.24", spec: 63 },
+  Name { text: b"0.3.4401.5.3.1.9.29", spec: 104 },
+  Name { text: b"0.3.4401.5.3.1.9.3", spec: 71 },
+  Name { text: b"0.3.4401.5.3.1.9.4", spec: 62 },
+  Name { text: b"0.3.4401.5.3.1.9.41", spec: 61 },
+  Name { text: b"0.3.4401.5.3.1.9.43", spec: 73 },
+  Name { text: b"0.3.4401.5.3.1.9.44", spec: 64 },
+  Name { text: b"0.3.4401.5.3.1.9.49", spec: 105 },
+  Name { text: b"0.3.4401.5.3.1.9.9", spec: 103 },
+  Name { text: b"1.2.156.10197.1.104.1", spec: 135 },
+  Name { text: b"1.2.156.10197.1.104.2", spec: 136 },
+  Name { text: b"1.2.156.10197.1.104.3", spec: 137 },
+  Name { text: b"1.2.156.10197.1.104.4", spec: 138 },
+  Name { text: b"1.2.156.10197.1.104.7", spec: 139 },
+  Name { text: b"1.2.392.200011.61.1.1.1.2", spec: 56 },
+  Name { text: b"1.2.392.200011.61.1.1.1.3", spec: 57 },
+  Name { text: b"1.2.392.200011.61.1.1.1.4", spec: 58 },
+  Name { text: b"1.2.410.200046.1.1.1", spec: 108 },
+  Name { text: b"1.2.410.200046.1.1.10", spec: 117 },
+  Name { text: b"1.2.410.200046.1.1.11", spec: 118 },
+  Name { text: b"1.2.410.200046.1.1.12", spec: 119 },
+  Name { text: b"1.2.410.200046.1.1.13", spec: 120 },
+  Name { text: b"1.2.410.200046.1.1.14", spec: 121 },
+  Name { text: b"1.2.410.200046.1.1.15", spec: 122 },
+  Name { text: b"1.2.410.200046.1.1.2", spec: 109 },
+  Name { text: b"1.2.410.200046.1.1.3", spec: 110 },
+  Name { text: b"1.2.410.200046.1.1.34", spec: 132 },
+  Name { text: b"1.2.410.200046.1.1.35", spec: 133 },
+  Name { text: b"1.2.410.200046.1.1.36", spec: 134 },
+  Name { text: b"1.2.410.200046.1.1.37", spec: 129 },
+  Name { text: b"1.2.410.200046.1.1.38", spec: 130 },
+  Name { text: b"1.2.410.200046.1.1.39", spec: 131 },
+  Name { text: b"1.2.410.200046.1.1.4", spec: 111 },
+  Name { text: b"1.2.410.200046.1.1.5", spec: 112 },
+  Name { text: b"1.2.410.200046.1.1.6", spec: 113 },
+  Name { text: b"1.2.410.200046.1.1.7", spec: 114 },
+  Name { text: b"1.2.410.200046.1.1.8", spec: 115 },
+  Name { text: b"1.2.410.200046.1.1.9", spec: 116 },
+  Name { text: b"1.2.840.113549.1.9.16.3.6", spec: 33 },
+  Name { text: b"1.2.840.113549.3.7", spec: 14 },
+  Name { text: b"1.3.111.2.1619.0.1.1", spec: 93 },
+  Name { text: b"1.3.111.2.1619.0.1.2", spec: 94 },
+  Name { text: b"1.3.14.3.2.17", spec: 4 },
+  Name { text: b"2.16.840.1.101.3.4.1.1", spec: 34 },
+  Name { text: b"2.16.840.1.101.3.4.1.2", spec: 35 },
+  Name { text: b"2.16.840.1.101.3.4.1.21", spec: 38 },
+  Name { text: b"2.16.840.1.101.3.4.1.22", spec: 39 },
+  Name { text: b"2.16.840.1.101.3.4.1.23", spec: 40 },
+  Name { text: b"2.16.840.1.101.3.4.1.24", spec: 41 },
+  Name { text: b"2.16.840.1.101.3.4.1.25", spec: 79 },
+  Name { text: b"2.16.840.1.101.3.4.1.26", spec: 84 },
+  Name { text: b"2.16.840.1.101.3.4.1.27", spec: 85 },
+  Name { text: b"2.16.840.1.101.3.4.1.28", spec: 86 },
+  Name { text: b"2.16.840.1.101.3.4.1.3", spec: 36 },
+  Name { text: b"2.16.840.1.101.3.4.1.4", spec: 37 },
+  Name { text: b"2.16.840.1.101.3.4.1.41", spec: 42 },
+  Name { text: b"2.16.840.1.101.3.4.1.42", spec: 43 },
+  Name { text: b"2.16.840.1.101.3.4.1.43", spec: 44 },
+  Name { text: b"2.16.840.1.101.3.4.1.44", spec: 45 },
+  Name { text: b"2.16.840.1.101.3.4.1.45", spec: 80 },
+  Name { text: b"2.16.840.1.101.3.4.1.46", spec: 87 },
+  Name { text: b"2.16.840.1.101.3.4.1.47", spec: 88 },
+  Name { text: b"2.16.840.1.101.3.4.1.48", spec: 89 },
+  Name { text: b"2.16.840.1.101.3.4.1.5", spec: 78 },
+  Name { text: b"2.16.840.1.101.3.4.1.6", spec: 81 },
+  Name { text: b"2.16.840.1.101.3.4.1.7", spec: 82 },
+  Name { text: b"2.16.840.1.101.3.4.1.8", spec: 83 },
+  Name { text: b"aes-128-cbc", spec: 35 },
+  Name { text: b"aes-128-cbc-hmac-sha1", spec: 96 },
+  Name { text: b"aes-128-cbc-hmac-sha256", spec: 98 },
+  Name { text: b"aes-128-ccm", spec: 82 },
+  Name { text: b"aes-128-cfb", spec: 37 },
+  Name { text: b"aes-128-cfb1", spec: 46 },
+  Name { text: b"aes-128-cfb8", spec: 49 },
+  Name { text: b"aes-128-ctr", spec: 90 },
+  Name { text: b"aes-128-ecb", spec: 34 },
+  Name { text: b"aes-128-gcm", spec: 81 },
+  Name { text: b"aes-128-ocb", spec: 100 },
+  Name { text: b"aes-128-ofb", spec: 36 },
+  Name { text: b"aes-128-wrap", spec: 78 },
+  Name { text: b"aes-128-wrap-pad", spec: 83 },
+  Name { text: b"aes-128-xts", spec: 93 },
+  Name { text: b"aes-192-cbc", spec: 39 },
+  Name { text: b"aes-192-ccm", spec: 85 },
+  Name { text: b"aes-192-cfb", spec: 41 },
+  Name { text: b"aes-192-cfb1", spec: 47 },
+  Name { text: b"aes-192-cfb8", spec: 50 },
+  Name { text: b"aes-192-ctr", spec: 91 },
+  Name { text: b"aes-192-ecb", spec: 38 },
+  Name { text: b"aes-192-gcm", spec: 84 },
+  Name { text: b"aes-192-ocb", spec: 101 },
+  Name { text: b"aes-192-ofb", spec: 40 },
+  Name { text: b"aes-192-wrap", spec: 79 },
+  Name { text: b"aes-192-wrap-pad", spec: 86 },
+  Name { text: b"aes-256-cbc", spec: 43 },
+  Name { text: b"aes-256-cbc-hmac-sha1", spec: 97 },
+  Name { text: b"aes-256-cbc-hmac-sha256", spec: 99 },
+  Name { text: b"aes-256-ccm", spec: 88 },
+  Name { text: b"aes-256-cfb", spec: 45 },
+  Name { text: b"aes-256-cfb1", spec: 48 },
+  Name { text: b"aes-256-cfb8", spec: 51 },
+  Name { text: b"aes-256-ctr", spec: 92 },
+  Name { text: b"aes-256-ecb", spec: 42 },
+  Name { text: b"aes-256-gcm", spec: 87 },
+  Name { text: b"aes-256-ocb", spec: 102 },
+  Name { text: b"aes-256-ofb", spec: 44 },
+  Name { text: b"aes-256-wrap", spec: 80 },
+  Name { text: b"aes-256-wrap-pad", spec: 89 },
+  Name { text: b"aes-256-xts", spec: 94 },
+  Name { text: b"aes128", spec: 35 },
+  Name { text: b"aes128-wrap", spec: 78 },
+  Name { text: b"aes128-wrap-pad", spec: 83 },
+  Name { text: b"aes192", spec: 39 },
+  Name { text: b"aes192-wrap", spec: 79 },
+  Name { text: b"aes192-wrap-pad", spec: 86 },
+  Name { text: b"aes256", spec: 43 },
+  Name { text: b"aes256-wrap", spec: 80 },
+  Name { text: b"aes256-wrap-pad", spec: 89 },
+  Name { text: b"aria-128-cbc", spec: 109 },
+  Name { text: b"aria-128-ccm", spec: 129 },
+  Name { text: b"aria-128-cfb", spec: 110 },
+  Name { text: b"aria-128-cfb1", spec: 123 },
+  Name { text: b"aria-128-cfb8", spec: 126 },
+  Name { text: b"aria-128-ctr", spec: 112 },
+  Name { text: b"aria-128-ecb", spec: 108 },
+  Name { text: b"aria-128-gcm", spec: 132 },
+  Name { text: b"aria-128-ofb", spec: 111 },
+  Name { text: b"aria-192-cbc", spec: 114 },
+  Name { text: b"aria-192-ccm", spec: 130 },
+  Name { text: b"aria-192-cfb", spec: 115 },
+  Name { text: b"aria-192-cfb1", spec: 124 },
+  Name { text: b"aria-192-cfb8", spec: 127 },
+  Name { text: b"aria-192-ctr", spec: 117 },
+  Name { text: b"aria-192-ecb", spec: 113 },
+  Name { text: b"aria-192-gcm", spec: 133 },
+  Name { text: b"aria-192-ofb", spec: 116 },
+  Name { text: b"aria-256-cbc", spec: 119 },
+  Name { text: b"aria-256-ccm", spec: 131 },
+  Name { text: b"aria-256-cfb", spec: 120 },
+  Name { text: b"aria-256-cfb1", spec: 125 },
+  Name { text: b"aria-256-cfb8", spec: 128 },
+  Name { text: b"aria-256-ctr", spec: 122 },
+  Name { text: b"aria-256-ecb", spec: 118 },
+  Name { text: b"aria-256-gcm", spec: 134 },
+  Name { text: b"aria-256-ofb", spec: 121 },
+  Name { text: b"aria128", spec: 109 },
+  Name { text: b"aria192", spec: 114 },
+  Name { text: b"aria256", spec: 119 },
+  Name { text: b"bf", spec: 22 },
+  Name { text: b"bf-cbc", spec: 22 },
+  Name { text: b"bf-cfb", spec: 24 },
+  Name { text: b"bf-ecb", spec: 23 },
+  Name { text: b"bf-ofb", spec: 25 },
+  Name { text: b"blowfish", spec: 22 },
+  Name { text: b"camellia-128-cbc", spec: 56 },
+  Name { text: b"camellia-128-cfb", spec: 62 },
+  Name { text: b"camellia-128-cfb1", spec: 65 },
+  Name { text: b"camellia-128-cfb8", spec: 68 },
+  Name { text: b"camellia-128-ctr", spec: 103 },
+  Name { text: b"camellia-128-ecb", spec: 59 },
+  Name { text: b"camellia-128-ofb", spec: 71 },
+  Name { text: b"camellia-192-cbc", spec: 57 },
+  Name { text: b"camellia-192-cfb", spec: 63 },
+  Name { text: b"camellia-192-cfb1", spec: 66 },
+  Name { text: b"camellia-192-cfb8", spec: 69 },
+  Name { text: b"camellia-192-ctr", spec: 104 },
+  Name { text: b"camellia-192-ecb", spec: 60 },
+  Name { text: b"camellia-192-ofb", spec: 72 },
+  Name { text: b"camellia-256-cbc", spec: 58 },
+  Name { text: b"camellia-256-cfb", spec: 64 },
+  Name { text: b"camellia-256-cfb1", spec: 67 },
+  Name { text: b"camellia-256-cfb8", spec: 70 },
+  Name { text: b"camellia-256-ctr", spec: 105 },
+  Name { text: b"camellia-256-ecb", spec: 61 },
+  Name { text: b"camellia-256-ofb", spec: 73 },
+  Name { text: b"camellia128", spec: 56 },
+  Name { text: b"camellia192", spec: 57 },
+  Name { text: b"camellia256", spec: 58 },
+  Name { text: b"cast", spec: 28 },
+  Name { text: b"cast-cbc", spec: 28 },
+  Name { text: b"cast5-cbc", spec: 28 },
+  Name { text: b"cast5-cfb", spec: 30 },
+  Name { text: b"cast5-ecb", spec: 29 },
+  Name { text: b"cast5-ofb", spec: 31 },
+  Name { text: b"chacha20", spec: 107 },
+  Name { text: b"chacha20-poly1305", spec: 106 },
+  Name { text: b"des", spec: 3 },
+  Name { text: b"des-cbc", spec: 3 },
+  Name { text: b"des-cfb", spec: 2 },
+  Name { text: b"des-cfb1", spec: 52 },
+  Name { text: b"des-cfb8", spec: 53 },
+  Name { text: b"des-ecb", spec: 1 },
+  Name { text: b"des-ede", spec: 4 },
+  Name { text: b"des-ede-cbc", spec: 13 },
+  Name { text: b"des-ede-cfb", spec: 17 },
+  Name { text: b"des-ede-ecb", spec: 4 },
+  Name { text: b"des-ede-ofb", spec: 19 },
+  Name { text: b"des-ede3", spec: 5 },
+  Name { text: b"des-ede3-cbc", spec: 14 },
+  Name { text: b"des-ede3-cfb", spec: 18 },
+  Name { text: b"des-ede3-cfb1", spec: 54 },
+  Name { text: b"des-ede3-cfb8", spec: 55 },
+  Name { text: b"des-ede3-ecb", spec: 5 },
+  Name { text: b"des-ede3-ofb", spec: 20 },
+  Name { text: b"des-ofb", spec: 15 },
+  Name { text: b"des3", spec: 14 },
+  Name { text: b"des3-wrap", spec: 33 },
+  Name { text: b"desx", spec: 21 },
+  Name { text: b"desx-cbc", spec: 21 },
+  Name { text: b"id-aes128-ccm", spec: 82 },
+  Name { text: b"id-aes128-gcm", spec: 81 },
+  Name { text: b"id-aes128-wrap", spec: 78 },
+  Name { text: b"id-aes128-wrap-pad", spec: 83 },
+  Name { text: b"id-aes192-ccm", spec: 85 },
+  Name { text: b"id-aes192-gcm", spec: 84 },
+  Name { text: b"id-aes192-wrap", spec: 79 },
+  Name { text: b"id-aes192-wrap-pad", spec: 86 },
+  Name { text: b"id-aes256-ccm", spec: 88 },
+  Name { text: b"id-aes256-gcm", spec: 87 },
+  Name { text: b"id-aes256-wrap", spec: 80 },
+  Name { text: b"id-aes256-wrap-pad", spec: 89 },
+  Name { text: b"id-smime-alg-cms3deswrap", spec: 33 },
+  Name { text: b"idea", spec: 6 },
+  Name { text: b"idea-cbc", spec: 6 },
+  Name { text: b"idea-cfb", spec: 7 },
+  Name { text: b"idea-ecb", spec: 8 },
+  Name { text: b"idea-ofb", spec: 16 },
+  Name { text: b"rc2", spec: 9 },
+  Name { text: b"rc2-128", spec: 9 },
+  Name { text: b"rc2-40", spec: 27 },
+  Name { text: b"rc2-40-cbc", spec: 27 },
+  Name { text: b"rc2-64", spec: 32 },
+  Name { text: b"rc2-64-cbc", spec: 32 },
+  Name { text: b"rc2-cbc", spec: 9 },
+  Name { text: b"rc2-cfb", spec: 11 },
+  Name { text: b"rc2-ecb", spec: 10 },
+  Name { text: b"rc2-ofb", spec: 12 },
+  Name { text: b"rc4", spec: 0 },
+  Name { text: b"rc4-40", spec: 26 },
+  Name { text: b"rc4-hmac-md5", spec: 95 },
+  Name { text: b"seed", spec: 75 },
+  Name { text: b"seed-cbc", spec: 75 },
+  Name { text: b"seed-cfb", spec: 77 },
+  Name { text: b"seed-ecb", spec: 74 },
+  Name { text: b"seed-ofb", spec: 76 },
+  Name { text: b"sm4", spec: 136 },
+  Name { text: b"sm4-cbc", spec: 136 },
+  Name { text: b"sm4-cfb", spec: 138 },
+  Name { text: b"sm4-cfb128", spec: 138 },
+  Name { text: b"sm4-ctr", spec: 139 },
+  Name { text: b"sm4-ecb", spec: 135 },
+  Name { text: b"sm4-ofb", spec: 137 },
+  Name { text: b"sm4-ofb128", spec: 137 },
+]
+
+/// The newline-separated names `crypto.getCiphers()` lists, as Node lists them.
+pub const CIPHER_NAMES: &'static [u8] = b"aes-128-cbc\naes-128-cbc-hmac-sha1\naes-128-cbc-hmac-sha256\naes-128-ccm\naes-128-cfb\naes-128-cfb1\naes-128-cfb8\naes-128-ctr\naes-128-ecb\naes-128-gcm\naes-128-ocb\naes-128-ofb\naes-128-xts\naes-192-cbc\naes-192-ccm\naes-192-cfb\naes-192-cfb1\naes-192-cfb8\naes-192-ctr\naes-192-ecb\naes-192-gcm\naes-192-ocb\naes-192-ofb\naes-256-cbc\naes-256-cbc-hmac-sha1\naes-256-cbc-hmac-sha256\naes-256-ccm\naes-256-cfb\naes-256-cfb1\naes-256-cfb8\naes-256-ctr\naes-256-ecb\naes-256-gcm\naes-256-ocb\naes-256-ofb\naes-256-xts\naes128\naes128-wrap\naes128-wrap-pad\naes192\naes192-wrap\naes192-wrap-pad\naes256\naes256-wrap\naes256-wrap-pad\naria-128-cbc\naria-128-ccm\naria-128-cfb\naria-128-cfb1\naria-128-cfb8\naria-128-ctr\naria-128-ecb\naria-128-gcm\naria-128-ofb\naria-192-cbc\naria-192-ccm\naria-192-cfb\naria-192-cfb1\naria-192-cfb8\naria-192-ctr\naria-192-ecb\naria-192-gcm\naria-192-ofb\naria-256-cbc\naria-256-ccm\naria-256-cfb\naria-256-cfb1\naria-256-cfb8\naria-256-ctr\naria-256-ecb\naria-256-gcm\naria-256-ofb\naria128\naria192\naria256\ncamellia-128-cbc\ncamellia-128-cfb\ncamellia-128-cfb1\ncamellia-128-cfb8\ncamellia-128-ctr\ncamellia-128-ecb\ncamellia-128-ofb\ncamellia-192-cbc\ncamellia-192-cfb\ncamellia-192-cfb1\ncamellia-192-cfb8\ncamellia-192-ctr\ncamellia-192-ecb\ncamellia-192-ofb\ncamellia-256-cbc\ncamellia-256-cfb\ncamellia-256-cfb1\ncamellia-256-cfb8\ncamellia-256-ctr\ncamellia-256-ecb\ncamellia-256-ofb\ncamellia128\ncamellia192\ncamellia256\nchacha20\nchacha20-poly1305\ndes-ede\ndes-ede-cbc\ndes-ede-cfb\ndes-ede-ecb\ndes-ede-ofb\ndes-ede3\ndes-ede3-cbc\ndes-ede3-cfb\ndes-ede3-cfb1\ndes-ede3-cfb8\ndes-ede3-ecb\ndes-ede3-ofb\ndes3\ndes3-wrap\nid-aes128-CCM\nid-aes128-GCM\nid-aes128-wrap\nid-aes128-wrap-pad\nid-aes192-CCM\nid-aes192-GCM\nid-aes192-wrap\nid-aes192-wrap-pad\nid-aes256-CCM\nid-aes256-GCM\nid-aes256-wrap\nid-aes256-wrap-pad\nid-smime-alg-CMS3DESwrap\nsm4\nsm4-cbc\nsm4-cfb\nsm4-ctr\nsm4-ecb\nsm4-ofb\n"
+
+fn lower(byte: u8) -> u8 { if byte >= 65 && byte <= 90 { return byte + 32 } return byte }
+
+fn sameName(text: &[u8], name: &[u8]) -> bool {
+  if text.length != name.length { return false }
+  let mut k: usize = 0
+  while k < text.length { if lower(name[k]) != text[k] { return false } k = k + 1 }
+  return true
+}
+
+/// Returns the table index of the cipher `name` names, ignoring the case of ASCII letters.
+pub fn lookup(name: &[u8]) -> Option<u32> {
+  let mut i: usize = 0
+  while i < NAMES.length {
+    if sameName(NAMES[i].text, name) { return Option<u32>.some(NAMES[i].spec) }
+    i = i + 1
+  }
+  return Option<u32>.none()
+}
+
+/// Returns the table index of the cipher with OpenSSL NID `nid`.
+pub fn byNid(nid: i32) -> Option<u32> {
+  let mut i: usize = 0
+  while i < SPECS.length { if SPECS[i].nid == nid { return Option<u32>.some(usize.toU32(i)) } i = i + 1 }
+  return Option<u32>.none()
+}
+
+/// Returns the table entry at `index`, which [`lookup`] or [`byNid`] returned.
+pub fn spec(index: u32) -> &'static Spec { return &SPECS[u32.toUsize(index)] }
+
+/// Whether the cipher takes an IV of `length` bytes. GCM takes 1 to 128 bytes, CCM 7 to 13 and
+/// OCB 1 to 15, as Node reports; every other cipher takes exactly its IV length.
+pub fn ivAllowed(entry: &Spec, length: usize) -> bool {
+  return match entry.mode {
+    Mode.Gcm => length >= 1 && length <= 128
+    Mode.Ccm => length >= 7 && length <= 13
+    Mode.Ocb => length >= 1 && length <= 15
+    _ => length == i32.toUsize(entry.ivLength)
+  }
+}
+
+/// Why a cipher call failed. [`errorText`] gives the message Node reports.
+pub enum CipherError {
+  UnknownCipher, Unsupported, InvalidKeyLength, InvalidIv, DuplicateXtsKeys, UnsupportedState,
+  WrongFinalBlockLength, BadDecrypt, AuthenticationFailed, Unavailable,
+}
+
+/// The error text in the "CODE: message" form that node:crypto turns into `e.code`. `ERR_NONE`
+/// marks the errors that Node reports without a code.
+pub fn errorText(error: CipherError) -> &'static [u8] {
+  return match move error {
+    CipherError.UnknownCipher => b"ERR_CRYPTO_UNKNOWN_CIPHER: Unknown cipher"
+    CipherError.Unsupported => b"ERR_OSSL_EVP_UNSUPPORTED: error:0308010C:digital envelope routines::unsupported"
+    CipherError.InvalidKeyLength => b"ERR_CRYPTO_INVALID_KEYLEN: Invalid key length"
+    CipherError.InvalidIv => b"ERR_CRYPTO_INVALID_IV: Invalid initialization vector"
+    CipherError.DuplicateXtsKeys => b"error:1C800095:Provider routines::xts duplicated keys"
+    CipherError.UnsupportedState => b"ERR_NONE: Trying to add data in unsupported state"
+    CipherError.WrongFinalBlockLength => b"error:1C80006B:Provider routines::wrong final block length"
+    CipherError.BadDecrypt => b"error:1C800064:Provider routines::bad decrypt"
+    CipherError.AuthenticationFailed => b"ERR_NONE: Unsupported state or unable to authenticate data"
+    CipherError.Unavailable => b"ERR_CRYPTO_UNSUPPORTED_OPERATION: This cipher setting is not available in silk.crypto yet"
+  }
+}
+
+/// The key, IV and direction of one cipher, checked as Node checks them at creation.
+pub struct Setup {
+  pub index: u32, pub encrypt: bool, pub tagLength: usize,
+  keyBytes: [u8; 64], keyLength: usize, ivBytes: [u8; 128], ivLength: usize,
+}
+
+impl Setup {
+  /// Checks `key` and `iv` for the cipher at `index` and keeps copies of them.
+  pub fn make(index: u32, key: &[u8], iv: &[u8], encrypt: bool, tagLength: usize) -> Result<Setup, CipherError> {
+    let entry = spec(index)
+    let refuse = match entry.mode {
+      Mode.Legacy => Option<CipherError>.some(CipherError.Unsupported)
+      Mode.Des3Wrap => Option<CipherError>.some(CipherError.Unavailable)
+      _ => Option<CipherError>.none()
+    }
+    if let Option.Some { value } = refuse { return Result<Setup, CipherError>.failResult(value) }
+    if key.length != i32.toUsize(entry.keyLength) { return Result<Setup, CipherError>.failResult(CipherError.InvalidKeyLength) }
+    if !ivAllowed(entry, iv.length) { return Result<Setup, CipherError>.failResult(CipherError.InvalidIv) }
+    if isXts(entry.mode) && encrypt {
+      let half = key.length / 2 let mut same = true let mut i: usize = 0
+      while i < half { if key[i] != key[half + i] { same = false } i = i + 1 }
+      if same { return Result<Setup, CipherError>.failResult(CipherError.DuplicateXtsKeys) }
+    }
+    if !available(entry, iv.length, tagLength) { return Result<Setup, CipherError>.failResult(CipherError.Unavailable) }
+    let mut setup = Setup { index: index, encrypt: encrypt, tagLength: tagLength, keyBytes: [0; 64], keyLength: key.length, ivBytes: [0; 128], ivLength: iv.length }
+    Slice.copyInto<u8>(&mut setup.keyBytes, 0, key)
+    Slice.copyInto<u8>(&mut setup.ivBytes, 0, iv)
+    return Result<Setup, CipherError>.succeed(move setup)
+  }
+
+  /// The key bytes.
+  pub fn key(self: &Self) -> &[u8] { return Slice.view<u8>(&self.keyBytes, 0, self.keyLength) }
+
+  /// The IV bytes.
+  pub fn iv(self: &Self) -> &[u8] { return Slice.view<u8>(&self.ivBytes, 0, self.ivLength) }
+}
+
+fn isXts(mode: Mode) -> bool { return match mode { Mode.Xts => true _ => false } }
+
+// Settings that Node accepts and silk.crypto does not run yet: GCM nonces other than 12 bytes,
+// GCM and ChaCha20-Poly1305 tags shorter than 16 bytes when decrypting, and ARIA GCM and CCM.
+fn available(entry: &Spec, ivLength: usize, tagLength: usize) -> bool {
+  return match entry.family {
+    Family.Aria => match entry.mode { Mode.Gcm => false Mode.Ccm => false _ => true }
+    Family.Aes => match entry.mode { Mode.Gcm => ivLength == 12 _ => true }
+    _ => true
+  }
+}
+
+fn started(state: CipherState) -> Result<CipherState, CipherError> { return Result<CipherState, CipherError>.succeed(move state) }
+fn done(count: usize) -> Result<usize, CipherError> { return Result<usize, CipherError>.succeed(count) }
+fn unsupported() -> Result<usize, CipherError> { return Result<usize, CipherError>.failResult(CipherError.UnsupportedState) }
+
+fn aesError(error: AesError) -> CipherError {
+  return match move error {
+    AesError.InvalidInputLength => CipherError.WrongFinalBlockLength
+    AesError.InvalidPadding => CipherError.BadDecrypt
+    AesError.InvalidKeyLength => CipherError.InvalidKeyLength
+    AesError.InvalidIvLength => CipherError.InvalidIv
+    AesError.OutputTooSmall => CipherError.UnsupportedState
+  }
+}
+
+fn chainError(error: BlockCipherError) -> CipherError {
+  return match move error {
+    BlockCipherError.InvalidInputLength => CipherError.WrongFinalBlockLength
+    BlockCipherError.InvalidPadding => CipherError.BadDecrypt
+    BlockCipherError.InvalidKeyLength => CipherError.InvalidKeyLength
+    BlockCipherError.InvalidIvLength => CipherError.InvalidIv
+    BlockCipherError.OutputTooSmall => CipherError.UnsupportedState
+  }
+}
+
+fn blockResult(result: Result<usize, AesError>) -> Result<usize, CipherError> {
+  return match move result {
+    Result.Success { value } => done(value)
+    Result.Failure { error } => Result<usize, CipherError>.failResult(aesError(move error))
+  }
+}
+
+fn chainResult(result: Result<usize, BlockCipherError>) -> Result<usize, CipherError> {
+  return match move result {
+    Result.Success { value } => done(value)
+    Result.Failure { error } => Result<usize, CipherError>.failResult(chainError(move error))
+  }
+}
+
+fn streamResult(count: usize, result: Result<(), AesError>) -> Result<usize, CipherError> {
+  return match move result {
+    Result.Success { .. } => done(count)
+    Result.Failure { error } => Result<usize, CipherError>.failResult(aesError(move error))
+  }
+}
+
+fn chainStream(count: usize, result: Result<(), BlockCipherError>) -> Result<usize, CipherError> {
+  return match move result {
+    Result.Success { .. } => done(count)
+    Result.Failure { error } => Result<usize, CipherError>.failResult(chainError(move error))
+  }
+}
+
+/// A cipher in progress. `Pending` until the first update, so that padding and associated data
+/// set after creation still apply; `Finished` once `finish` ran.
+pub union CipherState {
+  Pending,
+  AesCbc { state: AesCbc },
+  AesCfb { state: AesCfb },
+  AesCfb1 { state: AesCfb1 },
+  AesCfb8 { state: AesCfb8 },
+  AesCtr { state: AesCtr },
+  AesEcb { state: AesEcb },
+  AesOfb { state: AesOfb },
+  AriaCbc { state: Cbc<Aria> },
+  AriaCfb { state: Cfb<Aria> },
+  AriaCfb1 { state: Cfb1<Aria> },
+  AriaCfb8 { state: Cfb8<Aria> },
+  AriaCtr { state: Ctr<Aria> },
+  AriaEcb { state: Ecb<Aria> },
+  AriaOfb { state: Ofb<Aria> },
+  CamelliaCbc { state: Cbc<Camellia> },
+  CamelliaCfb { state: Cfb<Camellia> },
+  CamelliaCfb1 { state: Cfb1<Camellia> },
+  CamelliaCfb8 { state: Cfb8<Camellia> },
+  CamelliaCtr { state: Ctr<Camellia> },
+  CamelliaEcb { state: Ecb<Camellia> },
+  CamelliaOfb { state: Ofb<Camellia> },
+  Sm4Cbc { state: Cbc<Sm4> },
+  Sm4Cfb { state: Cfb<Sm4> },
+  Sm4Ctr { state: Ctr<Sm4> },
+  Sm4Ecb { state: Ecb<Sm4> },
+  Sm4Ofb { state: Ofb<Sm4> },
+  TripleDesCbc { state: Cbc<TripleDes> },
+  TripleDesCfb { state: Cfb<TripleDes> },
+  TripleDesCfb1 { state: Cfb1<TripleDes> },
+  TripleDesCfb8 { state: Cfb8<TripleDes> },
+  TripleDesEcb { state: Ecb<TripleDes> },
+  TripleDesOfb { state: Ofb<TripleDes> },
+  AesCbcHmac { state: AesCbc },
+  AesGcmEncrypt { state: AesGcmEncryptor },
+  AesGcmDecrypt { state: AesGcmDecryptor },
+  AesOcbEncrypt { state: AesOcbEncryptor },
+  AesOcbDecrypt { state: AesOcbDecryptor },
+  PolyEncrypt { state: ChaCha20Poly1305Encryptor },
+  PolyDecrypt { state: ChaCha20Poly1305Decryptor },
+  ChaCha { state: ChaCha20 },
+  /// XTS and key wrap take each update as one whole message.
+  PerUpdate,
+  /// CCM takes one update; `failed` records a tag that did not verify.
+  Ccm { used: bool, failed: bool, tag: [u8; 16] },
+  Finished,
+}
+
+impl CipherState {
+  /// Builds the state for `setup` once padding and associated data are known.
+  pub fn start(setup: &Setup, padding: bool, aad: &[u8]) -> Result<CipherState, CipherError> {
+    let entry = spec(setup.index)
+    let family = entry.family let mode = entry.mode
+    let key = setup.key() let iv = setup.iv()
+    if family == Family.Aes && mode == Mode.Cbc {
+      if let Result.Success { value } = if setup.encrypt { AesCbc.encryptor(key, iv, padding) } else { AesCbc.decryptor(key, iv, padding) } { return started(CipherState.AesCbc { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    if family == Family.Aes && mode == Mode.Cfb {
+      if let Result.Success { value } = if setup.encrypt { AesCfb.encryptor(key, iv) } else { AesCfb.decryptor(key, iv) } { return started(CipherState.AesCfb { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    if family == Family.Aes && mode == Mode.Cfb1 {
+      if let Result.Success { value } = if setup.encrypt { AesCfb1.encryptor(key, iv) } else { AesCfb1.decryptor(key, iv) } { return started(CipherState.AesCfb1 { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    if family == Family.Aes && mode == Mode.Cfb8 {
+      if let Result.Success { value } = if setup.encrypt { AesCfb8.encryptor(key, iv) } else { AesCfb8.decryptor(key, iv) } { return started(CipherState.AesCfb8 { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    if family == Family.Aes && mode == Mode.Ctr {
+      if let Result.Success { value } = AesCtr.make(key, iv) { return started(CipherState.AesCtr { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    if family == Family.Aes && mode == Mode.Ecb {
+      if let Result.Success { value } = if setup.encrypt { AesEcb.encryptor(key, padding) } else { AesEcb.decryptor(key, padding) } { return started(CipherState.AesEcb { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    if family == Family.Aes && mode == Mode.Ofb {
+      if let Result.Success { value } = AesOfb.make(key, iv) { return started(CipherState.AesOfb { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    if family == Family.Aria && mode == Mode.Cbc {
+      if let Result.Success { value: cipher } = Aria.make(key) { let made = if setup.encrypt { Cbc<Aria>.encryptor(move cipher, iv, padding) } else { Cbc<Aria>.decryptor(move cipher, iv, padding) } if let Result.Success { value } = move made { return started(CipherState.AriaCbc { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Aria && mode == Mode.Cfb {
+      if let Result.Success { value: cipher } = Aria.make(key) { let made = if setup.encrypt { Cfb<Aria>.encryptor(move cipher, iv) } else { Cfb<Aria>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.AriaCfb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Aria && mode == Mode.Cfb1 {
+      if let Result.Success { value: cipher } = Aria.make(key) { let made = if setup.encrypt { Cfb1<Aria>.encryptor(move cipher, iv) } else { Cfb1<Aria>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.AriaCfb1 { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Aria && mode == Mode.Cfb8 {
+      if let Result.Success { value: cipher } = Aria.make(key) { let made = if setup.encrypt { Cfb8<Aria>.encryptor(move cipher, iv) } else { Cfb8<Aria>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.AriaCfb8 { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Aria && mode == Mode.Ctr {
+      if let Result.Success { value: cipher } = Aria.make(key) { if let Result.Success { value } = Ctr<Aria>.make(move cipher, iv) { return started(CipherState.AriaCtr { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Aria && mode == Mode.Ecb {
+      if let Result.Success { value: cipher } = Aria.make(key) { let made = if setup.encrypt { Ecb<Aria>.encryptor(move cipher, padding) } else { Ecb<Aria>.decryptor(move cipher, padding) } return started(CipherState.AriaEcb { state: move made }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Aria && mode == Mode.Ofb {
+      if let Result.Success { value: cipher } = Aria.make(key) { if let Result.Success { value } = Ofb<Aria>.make(move cipher, iv) { return started(CipherState.AriaOfb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Camellia && mode == Mode.Cbc {
+      if let Result.Success { value: cipher } = Camellia.make(key) { let made = if setup.encrypt { Cbc<Camellia>.encryptor(move cipher, iv, padding) } else { Cbc<Camellia>.decryptor(move cipher, iv, padding) } if let Result.Success { value } = move made { return started(CipherState.CamelliaCbc { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Camellia && mode == Mode.Cfb {
+      if let Result.Success { value: cipher } = Camellia.make(key) { let made = if setup.encrypt { Cfb<Camellia>.encryptor(move cipher, iv) } else { Cfb<Camellia>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.CamelliaCfb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Camellia && mode == Mode.Cfb1 {
+      if let Result.Success { value: cipher } = Camellia.make(key) { let made = if setup.encrypt { Cfb1<Camellia>.encryptor(move cipher, iv) } else { Cfb1<Camellia>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.CamelliaCfb1 { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Camellia && mode == Mode.Cfb8 {
+      if let Result.Success { value: cipher } = Camellia.make(key) { let made = if setup.encrypt { Cfb8<Camellia>.encryptor(move cipher, iv) } else { Cfb8<Camellia>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.CamelliaCfb8 { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Camellia && mode == Mode.Ctr {
+      if let Result.Success { value: cipher } = Camellia.make(key) { if let Result.Success { value } = Ctr<Camellia>.make(move cipher, iv) { return started(CipherState.CamelliaCtr { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Camellia && mode == Mode.Ecb {
+      if let Result.Success { value: cipher } = Camellia.make(key) { let made = if setup.encrypt { Ecb<Camellia>.encryptor(move cipher, padding) } else { Ecb<Camellia>.decryptor(move cipher, padding) } return started(CipherState.CamelliaEcb { state: move made }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Camellia && mode == Mode.Ofb {
+      if let Result.Success { value: cipher } = Camellia.make(key) { if let Result.Success { value } = Ofb<Camellia>.make(move cipher, iv) { return started(CipherState.CamelliaOfb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Sm4 && mode == Mode.Cbc {
+      if let Result.Success { value: cipher } = Sm4.make(key) { let made = if setup.encrypt { Cbc<Sm4>.encryptor(move cipher, iv, padding) } else { Cbc<Sm4>.decryptor(move cipher, iv, padding) } if let Result.Success { value } = move made { return started(CipherState.Sm4Cbc { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Sm4 && mode == Mode.Cfb {
+      if let Result.Success { value: cipher } = Sm4.make(key) { let made = if setup.encrypt { Cfb<Sm4>.encryptor(move cipher, iv) } else { Cfb<Sm4>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.Sm4Cfb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Sm4 && mode == Mode.Ctr {
+      if let Result.Success { value: cipher } = Sm4.make(key) { if let Result.Success { value } = Ctr<Sm4>.make(move cipher, iv) { return started(CipherState.Sm4Ctr { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Sm4 && mode == Mode.Ecb {
+      if let Result.Success { value: cipher } = Sm4.make(key) { let made = if setup.encrypt { Ecb<Sm4>.encryptor(move cipher, padding) } else { Ecb<Sm4>.decryptor(move cipher, padding) } return started(CipherState.Sm4Ecb { state: move made }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Sm4 && mode == Mode.Ofb {
+      if let Result.Success { value: cipher } = Sm4.make(key) { if let Result.Success { value } = Ofb<Sm4>.make(move cipher, iv) { return started(CipherState.Sm4Ofb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.TripleDes && mode == Mode.Cbc {
+      if let Result.Success { value: cipher } = TripleDes.make(key) { let made = if setup.encrypt { Cbc<TripleDes>.encryptor(move cipher, iv, padding) } else { Cbc<TripleDes>.decryptor(move cipher, iv, padding) } if let Result.Success { value } = move made { return started(CipherState.TripleDesCbc { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.TripleDes && mode == Mode.Cfb {
+      if let Result.Success { value: cipher } = TripleDes.make(key) { let made = if setup.encrypt { Cfb<TripleDes>.encryptor(move cipher, iv) } else { Cfb<TripleDes>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.TripleDesCfb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.TripleDes && mode == Mode.Cfb1 {
+      if let Result.Success { value: cipher } = TripleDes.make(key) { let made = if setup.encrypt { Cfb1<TripleDes>.encryptor(move cipher, iv) } else { Cfb1<TripleDes>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.TripleDesCfb1 { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.TripleDes && mode == Mode.Cfb8 {
+      if let Result.Success { value: cipher } = TripleDes.make(key) { let made = if setup.encrypt { Cfb8<TripleDes>.encryptor(move cipher, iv) } else { Cfb8<TripleDes>.decryptor(move cipher, iv) } if let Result.Success { value } = move made { return started(CipherState.TripleDesCfb8 { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.TripleDes && mode == Mode.Ecb {
+      if let Result.Success { value: cipher } = TripleDes.make(key) { let made = if setup.encrypt { Ecb<TripleDes>.encryptor(move cipher, padding) } else { Ecb<TripleDes>.decryptor(move cipher, padding) } return started(CipherState.TripleDesEcb { state: move made }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.TripleDes && mode == Mode.Ofb {
+      if let Result.Success { value: cipher } = TripleDes.make(key) { if let Result.Success { value } = Ofb<TripleDes>.make(move cipher, iv) { return started(CipherState.TripleDesOfb { state: move value }) } }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidKeyLength)
+    }
+    if family == Family.Aes && mode == Mode.CbcHmac {
+      if let Result.Success { value } = if setup.encrypt { AesCbc.encryptor(key, iv, false) } else { AesCbc.decryptor(key, iv, false) } { return started(CipherState.AesCbcHmac { state: move value }) }
+      return Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+    }
+    return match mode {
+      Mode.Gcm => {
+        if setup.encrypt {
+          if let Result.Success { value } = AesGcmEncryptor.make(key, iv, aad) { return started(CipherState.AesGcmEncrypt { state: move value }) }
+        } else if let Result.Success { value } = AesGcmDecryptor.make(key, iv, aad) { return started(CipherState.AesGcmDecrypt { state: move value }) }
+        Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+      }
+      Mode.Ocb => {
+        if setup.encrypt {
+          if let Result.Success { value } = AesOcbEncryptor.make(key, iv, aad, setup.tagLength) { return started(CipherState.AesOcbEncrypt { state: move value }) }
+        } else if let Result.Success { value } = AesOcbDecryptor.make(key, iv, aad, setup.tagLength) { return started(CipherState.AesOcbDecrypt { state: move value }) }
+        Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+      }
+      Mode.Poly1305 => {
+        if setup.encrypt {
+          if let Result.Success { value } = ChaCha20Poly1305Encryptor.make(key, iv, aad) { return started(CipherState.PolyEncrypt { state: move value }) }
+        } else if let Result.Success { value } = ChaCha20Poly1305Decryptor.make(key, iv, aad) { return started(CipherState.PolyDecrypt { state: move value }) }
+        Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+      }
+      Mode.Stream => {
+        // OpenSSL's chacha20 IV is the 32-bit little-endian block counter, then the 96-bit nonce.
+        let counter = u8.toU32(iv[0]) | u32.shiftLeft(u8.toU32(iv[1]), 8) | u32.shiftLeft(u8.toU32(iv[2]), 16) | u32.shiftLeft(u8.toU32(iv[3]), 24)
+        if let Result.Success { value } = ChaCha20.make(key, Slice.view<u8>(iv, 4, 12), counter) { return started(CipherState.ChaCha { state: move value }) }
+        Result<CipherState, CipherError>.failResult(CipherError.InvalidIv)
+      }
+      Mode.Ccm => started(CipherState.Ccm { used: false, failed: false, tag: [0; 16] })
+      _ => started(CipherState.PerUpdate)
+    }
+  }
+
+  /// Runs `input` through the cipher into `output` and returns the bytes written. `output` holds
+  /// at least `input.length` + 48 bytes. `aad`, `plaintextLength` and `tag` are what CCM needs in
+  /// its single update.
+  pub fn update(self: &mut Self, setup: &Setup, aad: &[u8], plaintextLength: i64, tag: &[u8], input: &[u8], output: &mut [u8]) -> Result<usize, CipherError> {
+    let mode = spec(setup.index).mode
+    return match &mut self.* {
+      CipherState.AesCbc { state } => blockResult(state.update(input, move output))
+      CipherState.AesCfb { state } => streamResult(input.length, state.apply(input, move output))
+      CipherState.AesCfb1 { state } => streamResult(input.length, state.apply(input, move output))
+      CipherState.AesCfb8 { state } => streamResult(input.length, state.apply(input, move output))
+      CipherState.AesCtr { state } => streamResult(input.length, state.apply(input, move output))
+      CipherState.AesEcb { state } => blockResult(state.update(input, move output))
+      CipherState.AesOfb { state } => streamResult(input.length, state.apply(input, move output))
+      CipherState.AriaCbc { state } => chainResult(state.update(input, move output))
+      CipherState.AriaCfb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.AriaCfb1 { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.AriaCfb8 { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.AriaCtr { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.AriaEcb { state } => chainResult(state.update(input, move output))
+      CipherState.AriaOfb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.CamelliaCbc { state } => chainResult(state.update(input, move output))
+      CipherState.CamelliaCfb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.CamelliaCfb1 { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.CamelliaCfb8 { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.CamelliaCtr { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.CamelliaEcb { state } => chainResult(state.update(input, move output))
+      CipherState.CamelliaOfb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.Sm4Cbc { state } => chainResult(state.update(input, move output))
+      CipherState.Sm4Cfb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.Sm4Ctr { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.Sm4Ecb { state } => chainResult(state.update(input, move output))
+      CipherState.Sm4Ofb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.TripleDesCbc { state } => chainResult(state.update(input, move output))
+      CipherState.TripleDesCfb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.TripleDesCfb1 { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.TripleDesCfb8 { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.TripleDesEcb { state } => chainResult(state.update(input, move output))
+      CipherState.TripleDesOfb { state } => chainStream(input.length, state.apply(input, move output))
+      CipherState.AesCbcHmac { state } => { if input.length % 16 != 0 { return unsupported() } blockResult(state.update(input, move output)) }
+      CipherState.AesGcmEncrypt { state } => match state.update(input, move output) { Result.Success { .. } => done(input.length) Result.Failure { .. } => unsupported() }
+      CipherState.AesGcmDecrypt { state } => match state.update(input, move output) { Result.Success { .. } => done(input.length) Result.Failure { .. } => unsupported() }
+      CipherState.AesOcbEncrypt { state } => match state.update(input, move output) { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
+      CipherState.AesOcbDecrypt { state } => match state.update(input, move output) { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
+      CipherState.PolyEncrypt { state } => match state.update(input, move output) { Result.Success { .. } => done(input.length) Result.Failure { .. } => unsupported() }
+      CipherState.PolyDecrypt { state } => match state.update(input, move output) { Result.Success { .. } => done(input.length) Result.Failure { .. } => unsupported() }
+      CipherState.ChaCha { state } => match state.apply(input, move output) { Result.Success { .. } => done(input.length) Result.Failure { .. } => unsupported() }
+      CipherState.Ccm { used, failed, tag: sealed } => {
+        if used || plaintextLength >= 0 && usize.toI64(input.length) != plaintextLength { return unsupported() }
+        used = true
+        if setup.encrypt {
+          return match AesCcm.seal(setup.key(), setup.iv(), aad, input, move output, Slice.viewMut<u8>(&mut sealed, 0, setup.tagLength)) { Result.Success { .. } => done(input.length) Result.Failure { .. } => unsupported() }
+        }
+        if tag.length == 0 { failed = true return done(0) }
+        match AesCcm.open(setup.key(), setup.iv(), aad, input, tag, move output) {
+          Result.Success { .. } => done(input.length)
+          Result.Failure { .. } => { failed = true done(0) }
+        }
+      }
+      CipherState.PerUpdate => perUpdate(mode, setup, input, move output)
+      _ => unsupported()
+    }
+  }
+
+  /// Ends the message: writes the last bytes into `output`, which holds at least 48 bytes, and
+  /// returns their number. An AEAD encryptor writes its 16-byte tag into `tagOutput`; a decryptor
+  /// checks `tag`.
+  pub fn finish(self: Self, setup: &Setup, aad: &[u8], tag: &[u8], output: &mut [u8], tagOutput: &mut [u8; 16]) -> Result<usize, CipherError> {
+    return match move self {
+      CipherState.AesCbc { state } => blockResult(state.finish(move output))
+      CipherState.AesCfb { state } => done(0)
+      CipherState.AesCfb1 { state } => done(0)
+      CipherState.AesCfb8 { state } => done(0)
+      CipherState.AesCtr { state } => done(0)
+      CipherState.AesEcb { state } => blockResult(state.finish(move output))
+      CipherState.AesOfb { state } => done(0)
+      CipherState.AriaCbc { state } => chainResult(state.finish(move output))
+      CipherState.AriaCfb { state } => done(0)
+      CipherState.AriaCfb1 { state } => done(0)
+      CipherState.AriaCfb8 { state } => done(0)
+      CipherState.AriaCtr { state } => done(0)
+      CipherState.AriaEcb { state } => chainResult(state.finish(move output))
+      CipherState.AriaOfb { state } => done(0)
+      CipherState.CamelliaCbc { state } => chainResult(state.finish(move output))
+      CipherState.CamelliaCfb { state } => done(0)
+      CipherState.CamelliaCfb1 { state } => done(0)
+      CipherState.CamelliaCfb8 { state } => done(0)
+      CipherState.CamelliaCtr { state } => done(0)
+      CipherState.CamelliaEcb { state } => chainResult(state.finish(move output))
+      CipherState.CamelliaOfb { state } => done(0)
+      CipherState.Sm4Cbc { state } => chainResult(state.finish(move output))
+      CipherState.Sm4Cfb { state } => done(0)
+      CipherState.Sm4Ctr { state } => done(0)
+      CipherState.Sm4Ecb { state } => chainResult(state.finish(move output))
+      CipherState.Sm4Ofb { state } => done(0)
+      CipherState.TripleDesCbc { state } => chainResult(state.finish(move output))
+      CipherState.TripleDesCfb { state } => done(0)
+      CipherState.TripleDesCfb1 { state } => done(0)
+      CipherState.TripleDesCfb8 { state } => done(0)
+      CipherState.TripleDesEcb { state } => chainResult(state.finish(move output))
+      CipherState.TripleDesOfb { state } => done(0)
+      CipherState.AesCbcHmac { state } => blockResult(state.finish(move output))
+      CipherState.AesGcmEncrypt { state } => match state.finish(move tagOutput) { Result.Success { .. } => done(0) Result.Failure { .. } => unsupported() }
+      CipherState.AesGcmDecrypt { state } => if tag.length != 16 { authenticationFailed() } else { match state.finish(tag) { Result.Success { .. } => done(0) Result.Failure { .. } => authenticationFailed() } }
+      CipherState.AesOcbEncrypt { state } => match state.finish(move output, Slice.viewMut<u8>(move tagOutput, 0, setup.tagLength)) { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
+      CipherState.AesOcbDecrypt { state } => if tag.length != setup.tagLength { authenticationFailed() } else { match state.finish(move output, tag) { Result.Success { value } => done(value) Result.Failure { .. } => authenticationFailed() } }
+      CipherState.PolyEncrypt { state } => match state.finish(move tagOutput) { Result.Success { .. } => done(0) Result.Failure { .. } => unsupported() }
+      CipherState.PolyDecrypt { state } => if tag.length != 16 { authenticationFailed() } else { match state.finish(tag) { Result.Success { .. } => done(0) Result.Failure { .. } => authenticationFailed() } }
+      CipherState.ChaCha { .. } => done(0)
+      CipherState.Ccm { used, failed, tag: sealed } => {
+        if failed { return authenticationFailed() }
+        if used { Slice.copyInto<u8>(move tagOutput, 0, &sealed) return done(0) }
+        // No update came: the message is empty, and the tag still covers the associated data.
+        if setup.encrypt {
+          return match AesCcm.seal(setup.key(), setup.iv(), aad, b"", Slice.viewMut<u8>(move output, 0, 0), Slice.viewMut<u8>(move tagOutput, 0, setup.tagLength)) { Result.Success { .. } => done(0) Result.Failure { .. } => unsupported() }
+        }
+        match AesCcm.open(setup.key(), setup.iv(), aad, b"", tag, Slice.viewMut<u8>(move output, 0, 0)) { Result.Success { .. } => done(0) Result.Failure { .. } => authenticationFailed() }
+      }
+      CipherState.PerUpdate => done(0)
+      _ => unsupported()
+    }
+  }
+}
+
+fn authenticationFailed() -> Result<usize, CipherError> { return Result<usize, CipherError>.failResult(CipherError.AuthenticationFailed) }
+
+// XTS and key wrap: OpenSSL treats each update as one whole message.
+fn perUpdate(mode: Mode, setup: &Setup, input: &[u8], output: &mut [u8]) -> Result<usize, CipherError> {
+  return match mode {
+    Mode.Xts => {
+      if input.length < 16 { return unsupported() }
+      let result = if setup.encrypt { AesXts.encrypt(setup.key(), setup.iv(), input, move output) } else { AesXts.decrypt(setup.key(), setup.iv(), input, move output) }
+      match move result { Result.Success { .. } => done(input.length) Result.Failure { .. } => unsupported() }
+    }
+    Mode.Wrap => {
+      if input.length == 0 { return done(0) }
+      let result = if setup.encrypt { AesKeyWrap.wrap(setup.key(), setup.iv(), input, move output) } else { AesKeyWrap.unwrap(setup.key(), setup.iv(), input, move output) }
+      match move result { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
+    }
+    Mode.WrapPad => {
+      if input.length == 0 { return done(0) }
+      let result = if setup.encrypt { AesKeyWrap.wrapPadded(setup.key(), setup.iv(), input, move output) } else { AesKeyWrap.unwrapPadded(setup.key(), setup.iv(), input, move output) }
+      match move result { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
+    }
+    _ => unsupported()
+  }
+}
