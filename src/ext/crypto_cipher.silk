@@ -17,6 +17,10 @@ import silk.crypto.aes_ccm { AesCcm, AesCcmError }
 import silk.crypto.aes_ocb { AesOcbEncryptor, AesOcbDecryptor, AesOcbError }
 import silk.crypto.aes_xts { AesXts, AesXtsError }
 import silk.crypto.aes_wrap { AesKeyWrap, AesKeyWrapError }
+import silk.crypto.des_wrap { TripleDesKeyWrap }
+import silk.core.effect { Effect }
+import silk.system.random { Random }
+import silk.system.random_native { OsRandom }
 import silk.crypto.aria { Aria }
 import silk.crypto.camellia { Camellia }
 import silk.crypto.sm4 { Sm4 }
@@ -519,7 +523,6 @@ impl Setup {
     let entry = spec(index)
     let refuse = match entry.mode {
       Mode.Legacy => Option<CipherError>.some(CipherError.Unsupported)
-      Mode.Des3Wrap => Option<CipherError>.some(CipherError.Unavailable)
       _ => Option<CipherError>.none()
     }
     if let Option.Some { value } = refuse { return Result<Setup, CipherError>.failResult(value) }
@@ -963,6 +966,17 @@ fn perUpdate(mode: Mode, setup: &Setup, input: &[u8], output: &mut [u8]) -> Resu
     Mode.Wrap => {
       if input.length == 0 { return done(0) }
       let result = if setup.encrypt { AesKeyWrap.wrap(setup.key(), setup.iv(), input, move output) } else { AesKeyWrap.unwrap(setup.key(), setup.iv(), input, move output) }
+      match move result { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
+    }
+    Mode.Des3Wrap => {
+      if input.length == 0 { return done(0) }
+      let result = if setup.encrypt {
+        // RFC 3217 draws a fresh IV for each wrap, as OpenSSL does.
+        let mut iv: [u8; 8] = [0; 8]
+        let mut random = OsRandom.make()
+        run Random.fillBytes(&mut iv) |> Effect.provideMut<Random>(&mut random)
+        TripleDesKeyWrap.wrap(setup.key(), &iv, input, move output)
+      } else { TripleDesKeyWrap.unwrap(setup.key(), input, move output) }
       match move result { Result.Success { value } => done(value) Result.Failure { .. } => unsupported() }
     }
     Mode.WrapPad => {
