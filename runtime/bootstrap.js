@@ -913,8 +913,9 @@ function run() {
       continue;
     }
     if (arg === '-v' || arg === '--version') { host.stdout.write('silkjsruntime 0.1.0 (QuickJS; Node 24 target)\n'); return; }
-    if (arg === '-h' || arg === '--help') {
-      host.stdout.write(`Usage: silkjsruntime [options] [script.js] [arguments]
+    if (arg === '-h' || arg === '--help' || arg === '--help-options') {
+      host.stdout.write(`Node-compatible runtime options: silkjsruntime [options] [script.js] [arguments]
+Use silkjsruntime help for commands, or silkjsruntime help COMMAND for command help.
   -e, --eval CODE    Evaluate JavaScript (also --eval=CODE)
   -p, --print [CODE] Evaluate and print; read stdin when CODE is omitted
   -c, --check        Check syntax without executing

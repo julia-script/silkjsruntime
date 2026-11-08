@@ -17,7 +17,7 @@ master, slave = pty.openpty()
 environment = dict(os.environ, NODE_REPL_HISTORY='', TERM='xterm', NO_COLOR='1')
 environment.pop('FORCE_COLOR', None)
 environment.pop('NODE_NO_READLINE', None)
-process = subprocess.Popen([executable, '-i'], stdin=slave, stdout=slave, stderr=slave,
+process = subprocess.Popen([executable, *(sys.argv[2:] or ['-i'])], stdin=slave, stdout=slave, stderr=slave,
                            env=environment, start_new_session=True,
                            preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
 os.close(slave)

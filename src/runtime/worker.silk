@@ -70,6 +70,8 @@ import ext.http_parser_native
 import ext.trace_native
 import ext.sea_native
 import runtime.embedded
+import runtime.cli { Invocation }
+import runtime.cli as cli
 
 unsafe fn global(context: *mut HeapHeader) -> ValueBits {
   let anchor = () let state = unsafe HeapCell.payload<ContextState, ()>(&anchor, context)
@@ -224,8 +226,15 @@ unsafe effect fn execute<'m>(engine: &mut Engine<'m, Services>, context: *mut He
   engine.services.wasi = run wasi_native.open(allocator)
   engine.services.httpParser = run http_parser_native.open(allocator)
   engine.services.tracing = run trace_native.open(allocator)
-  engine.services.sea = run sea_native.open(&unsafe worker_native.groupResources(workers))
-  let bootstrap = run unsafe configure(&mut engine, context, arguments, process)
+  let sea = run sea_native.open(&unsafe worker_native.groupResources(workers))
+  engine.services.sea = sea
+  // Embedded applications own their argv, including names that match runtime commands.
+  let invocation = if unsafe sea_native.hasPayload(sea) { Invocation.Passthrough } else { run cli.prepare(arguments) }
+  let bootstrap = match move invocation {
+    Invocation.Passthrough => run unsafe configure(&mut engine, context, arguments, process)
+    Invocation.Arguments { values } => run unsafe configure(&mut engine, context, &values, process)
+    Invocation.Exit { code } => { return code }
+  }
   let rt = unsafe runtime.contextRuntime(context)
   engine.services.normalize = run unsafe common.get(&mut engine, context, bootstrap, b"normalize")
   engine.services.load = run unsafe common.get(&mut engine, context, bootstrap, b"load")

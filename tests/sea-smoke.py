@@ -19,7 +19,7 @@ assert.equal(module.filename, process.execPath);
 assert.equal(require.main, module);
 assert.equal(process.mainModule, module);
 assert.equal(__dirname, require('node:path').dirname(process.execPath));
-assert.deepEqual(process.argv.slice(2), ['argument with spaces', '--application-flag']);
+assert.deepEqual(process.argv.slice(2), ['run', '--help', 'argument with spaces', '--application-flag']);
 assert.equal(process.argv[1], process.execPath);
 assert.throws(() => require('./deleted-main.cjs'), { code: 'ERR_UNKNOWN_BUILTIN_MODULE' });
 assert.deepEqual(sea.getAssetKeys().sort(), ['__proto__', 'binary', 'empty', 'text']);
@@ -92,7 +92,7 @@ def main():
                  '--blob', cwd / 'app.blob', '--output', cwd / 'standalone'], cwd)
             for name in ('main.cjs', 'text.txt', 'binary.bin', 'empty.bin', 'config.json', 'app.blob'):
                 (cwd / name).unlink()
-            result = run([cwd / 'standalone', 'argument with spaces', '--application-flag'], cwd)
+            result = run([cwd / 'standalone', 'run', '--help', 'argument with spaces', '--application-flag'], cwd)
             assert result.stdout.strip() == 'SEA ownership and standalone execution passed', result
         # Snapshot requests must fail without evaluating source or writing a blob.
         (cwd / 'main.cjs').write_text("require('node:fs').writeFileSync('ran-main', 'bad')")

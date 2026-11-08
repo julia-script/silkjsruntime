@@ -37,10 +37,15 @@ After the build script has prepared the dependencies and embedded modules, `silk
 ./build/silkjsruntime app.js
 ./build/silkjsruntime app.mjs
 ./build/silkjsruntime app.ts
-./build/silkjsruntime -e 'console.log(require("node:path").join("a", "b"))'
-./build/silkjsruntime --test
-./build/silkjsruntime -i
+./build/silkjsruntime run dev --port 3000
+./build/silkjsruntime eval --print '6 * 7'
+./build/silkjsruntime check app.js
+./build/silkjsruntime test --reporter tap
+./build/silkjsruntime repl
+./build/silkjsruntime help run
 ```
+
+`run` executes a named `package.json` script and forwards subsequent arguments, with an optional `--` separator. Put `eval` options before the source; subsequent arguments belong to the evaluated script. With no arguments, the runtime starts the REPL. `--help` lists commands and `--help-options` lists the supported Node-compatible flags. Existing forms such as `--run`, `-e`, `--test`, and `-i` remain supported.
 
 The implementation includes CommonJS and ESM package loading, TypeScript execution, filesystem and process APIs, streams, networking and TLS/HTTP2, crypto and WebCrypto, workers and cluster, SQLite, Intl (SilkJS's ECMA-402 implementation in Silk, with its own CLDR-derived locale data; no ICU), Web APIs, WebAssembly/WASI, Node-API addons, the test runner, REPL, inspector, and native profiling. Feature-specific fixtures in [`tests/`](tests/) exercise these contracts, including cross-process and cross-realm ownership and failure paths.
 

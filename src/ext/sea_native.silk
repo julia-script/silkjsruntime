@@ -59,6 +59,11 @@ unsafe fn release(state: *mut State) -> () {
   unsafe resources.release(unsafe raw(state))
 }
 pub unsafe fn close(state: *mut State) -> () { unsafe release(state) }
+/// Whether startup belongs to an embedded application, including malformed payloads.
+pub unsafe fn hasPayload(state: *mut State) -> bool {
+  let anchor = () let entry = unsafe borrow(&anchor, state)
+  return entry.payload.status != 0
+}
 pub unsafe fn freeBuffer(opaque: ?*mut u8, data: ?*mut u8) -> () {
   // External callbacks can run again with null data when a detached wrapper
   // dies. Its mapping reference was already released during detachment.
