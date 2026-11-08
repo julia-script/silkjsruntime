@@ -29,7 +29,9 @@ Use `SILK_CLANG` to select a particular Clang executable. `python3 tools/build.p
 
 The build prepares the exact SilkJS revision declared in `silk.toml`, verifies its archive checksum, applies the declared [compatibility patch](vendor/silkjs/README.md), and rejects unexpected modifications to an already prepared dependency tree. It also prepares the pinned WAMR/uvwasi dependencies, embeds the JavaScript extensions, and links the native executable. An installed Node executable is not required to build or run it.
 
-After the build script has prepared the dependencies and embedded modules, `silk build` can rebuild the package. Its default profile optimizes native code while retaining debug symbols; the executable is written to `build/llvm/<target>/release-with-debug/silkjsruntime`. Unoptimized native frames can exhaust the engine’s stack budget during REPL startup.
+After the build script has prepared the dependencies and embedded modules, `silk build` can rebuild the package. Both build commands default to unoptimized code with debug symbols. The package executable is written to `build/llvm/<target>/debug/silkjsruntime`; use `silk build --release` for an optimized package build.
+
+The main isolate uses up to 4 MiB of native stack, bounded by the OS stack with room for error handling. Explicit worker stack limits are preserved. Small worker limits can still be exhausted by the engine's larger unoptimized parser frames; [silkjs#780](https://github.com/julia-script/silkjs/issues/780) tracks that remaining debug-build limitation.
 
 ## Run
 
@@ -86,6 +88,8 @@ node tests/compat.mjs
 ```
 
 `SILKJS_RUNTIME` selects the runtime executable and `NODE_REFERENCE` selects a different Node reference executable. An optional positional regular expression selects cases. Node is a test oracle or debugger client here, not a production execution backend.
+
+For unoptimized builds, use `SILKJS_TEST_TIMEOUT_MS=60000 node tests/compat.mjs`: cases that launch several child runtimes can exceed the default 15-second case timeout. `python3 tests/stack-budget-smoke.py` checks debug REPL compilation and recovery from stack overflow, including a restricted native stack.
 
 Additional integration consumers cover native addons, permissions, workers, network peers, SQLite, VM caches, inspector transport, profiling, REPL interaction, and standalone executables. Their executable inputs and platform requirements are defined in the individual fixtures. Engine-side native consumers additionally check allocator ownership and compatibility with the pinned QuickJS C reference.
 

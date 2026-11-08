@@ -3,14 +3,6 @@ name = "silkjsruntime"
 version = "0.1.0"
 silk-version = "0.1.0-dev.61+91f335268900"
 
-# The interpreter needs optimized native frames to stay within its stack budget.
-[build]
-profile = "release-with-debug"
-
-[profiles.release-with-debug]
-optimization = "speed"
-debug = true
-
 [dependencies]
 silkjs = { path = "build/deps/silkjs-c8c320bb4839217d29a45a215c4362da334c6e2f" }
 # SQLite 3 compiled from the amalgamation that silk-lang/nonstd pins, with the session extension.

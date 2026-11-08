@@ -416,9 +416,10 @@ unsafe effect fn runtimeBody(workers: *mut worker_native.State, arguments: &List
   let mut allocator = run RuntimeAllocator.make(unsafe worker_native.reportingAllocator(workers))
   let memory = run allocator.observe()
   let allocatorPointer = Pointer.fromMutRef<RuntimeHeap>(&mut allocator)
-  let rt = run runtime.allocateRuntimeStorage(stack.currentFrameAddress()) |> Effect.provideMut<Allocator>(&mut allocator)
+  let stackTop = stack.currentFrameAddress()
+  let rt = run runtime.allocateRuntimeStorage(stackTop) |> Effect.provideMut<Allocator>(&mut allocator)
   unsafe debugger.configureCompilation(rt, true)
-  unsafe worker_native.configureRuntime(workers, rt)
+  unsafe worker_native.configureRuntime(workers, rt, stackTop)
   let domain = unsafe worker_native.domain(workers)
   let mut engine = Engine { memory: &memory, domain: domain, services: move services }
   let initialized = run Effect.result(unsafe events.initHandlers(rt, process, false, domain)) |> Effect.provideMut<Allocator>(&mut allocator)

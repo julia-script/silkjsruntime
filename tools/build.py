@@ -49,10 +49,9 @@ def main():
     build_native.build(native, environment, release=args.release)
     # Source-file compilation keeps the generic engine in one native object.
     command = ['silk', '+' + version, 'build', 'src/main.silk', '-o', str(args.output.resolve()),
+               '--optimization', 'speed' if args.release else 'none',
                '--debug', str(not args.release).lower(),
                '--clang', str(ROOT / 'tools/clang.py')]
-    if args.release:
-        command += ['--optimization', 'speed']
     subprocess.run(command, cwd=ROOT, env=environment, check=True)
 
 
