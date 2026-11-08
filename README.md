@@ -29,6 +29,8 @@ Use `SILK_CLANG` to select a particular Clang executable. `python3 tools/build.p
 
 The build prepares the exact SilkJS revision declared in `silk.toml`, verifies its archive checksum, applies the declared [compatibility patch](vendor/silkjs/README.md), and rejects unexpected modifications to an already prepared dependency tree. It also prepares the pinned WAMR/uvwasi dependencies, embeds the JavaScript extensions, and links the native executable. An installed Node executable is not required to build or run it.
 
+After the build script has prepared the dependencies and embedded modules, `silk build` can rebuild the package. Its default profile optimizes native code while retaining debug symbols; the executable is written to `build/llvm/<target>/release-with-debug/silkjsruntime`. Unoptimized native frames can exhaust the engine’s stack budget during REPL startup.
+
 ## Run
 
 ```sh
