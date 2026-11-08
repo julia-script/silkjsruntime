@@ -7,7 +7,6 @@ import silk.core.effect { Effect }
 import silk.core.result { Result }
 import silk.core.option { Option }
 import silk.collections.list { List }
-import silk.num.f64
 import silkjs.js_engine { Engine }
 import silk.collections.slice { Slice }
 import silk.num.usize
@@ -17,7 +16,7 @@ import silkjs.js_heap { HeapCell, HeapHeader }
 import silkjs.js_core_types { RuntimeState, ContextState, ObjectData, ObjectPayload, NativeFunctionId, NativeErrorKind, FrameSlots }
 import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import libs.core.owners { Scope }
 import libs.core.owners as owners
 import libs.core.common as common

@@ -21,7 +21,7 @@ import silkjs.js_heap { HeapCell, HeapHeader }
 import silkjs.js_core_types { FrameSlots, NativeErrorKind, RuntimeState, ObjectData, ObjectPayload, ModuleDef, FunctionBytecode, FunctionDebugInfo }
 import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import libs.core.owners { Scope }
 import libs.core.owners as owners
 import libs.core.common as common
@@ -157,7 +157,7 @@ unsafe effect fn pumpBody<'m,S:EngineServices>(engine:&mut Engine<'m,S>,context:
     if delay>0 {
       let mut byte:u8=0
       let listening=unsafe transport.silk_inspector_url(socket,Pointer.fromMutRef<u8>(&mut byte),0)!=0
-      if listening { let ignored=unsafe transport.silk_inspector_wait(socket,delay) }
+      if listening { let _ignored=unsafe transport.silk_inspector_wait(socket,delay) }
       else { let _ignored=unsafe route.wait(unsafe mailbox(state),i32.toU32(delay)) }
     }
   }

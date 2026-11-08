@@ -63,9 +63,9 @@ pub unsafe effect fn make<'m, S: EngineServices>(engine: &mut Engine<'m, S>, con
   // All fallible allocation precedes acquiring the three captured strong edges.
   let allocatedCell = run Effect.result(HeapCell.allocate(HeapKind.Auxiliary, NativeCapturedValues { values: move captures }))
   let capturedCell = match move allocatedCell { Result<*mut HeapHeader, OutOfMemoryError>.Success { value: cell } => cell Result<*mut HeapHeader, OutOfMemoryError>.Failure { error } => { unsafe gc.release(&mut engine, unsafe runtime.contextRuntime(context), value) fail move error } }
-  let retainedHandlers = unsafe handlers.retained()
-  let retainedSandbox = unsafe sandbox.retained()
-  let retainedBacking = unsafe backingGlobal.retained()
+  let _retainedHandlers = unsafe handlers.retained()
+  let _retainedSandbox = unsafe sandbox.retained()
+  let _retainedBacking = unsafe backingGlobal.retained()
   let mut changed = () let object = unsafe HeapCell.payloadMut<ObjectData, ()>(&mut changed, core.reference(value))
   object.setIsExotic(true)
   object.payload = ObjectPayload.NativeFunction { function: NativeFunctionData {

@@ -16,7 +16,7 @@ import silkjs.js_heap { HeapHeader }
 import silkjs.js_core_types { FrameSlots, NativeFunctionId, NativeErrorKind }
 import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_buffer_storage as buffers
 import libs.core.common as common
 import silkjs.js_std_support as text

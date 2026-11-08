@@ -29,7 +29,7 @@ import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
 import silkjs.js_string_types { StringLengthError }
 import silkjs.js_proxy_core as core
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_binary_object_writer as writer
 import silkjs.js_binary_object_reader as reader
 import silkjs.js_debug_positions as positions

@@ -19,7 +19,7 @@ import silkjs.js_heap { HeapCell, HeapHeader }
 import silkjs.js_value { ValueBits }
 import silkjs.js_core_types { ContextState, ObjectData, ObjectPayload, FrameSlots, NativeErrorKind, JS_PROP_CONFIGURABLE, JS_PROP_THROW }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_string_types { StringLengthError }
 import silkjs.js_bigint { BigIntError }
 import silkjs.js_stack_frames { FrameSnapshot }

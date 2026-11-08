@@ -24,14 +24,13 @@ import silk.num.usize
 import silk.num.f32
 import silk.num.f64
 import silkjs.js_engine { Engine }
-import silkjs.runtime_memory { RuntimeAllocator }
+import silkjs.js_interrupt_host { InterruptHooks as _InterruptHooks }
 import silkjs.js_heap { HeapCell, HeapHeader }
 import silkjs.js_value { ValueBits }
 import silkjs.js_core_types { ContextState, RuntimeState, FrameSlots, NativeErrorKind, NativeFunctionId, NativeCallProtocol, ObjectData, ObjectPayload }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_interrupt_host { InterruptHooks }
 import silkjs.js_errors as errors
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_string_types { StringLengthError }
 import silkjs.js_bigint { BigIntError }
 import silkjs.js_property_get as properties
@@ -344,7 +343,7 @@ unsafe effect fn instanceExports<'m>(engine: &mut Engine<'m, host.Services>, ctx
     match move defined { Result<bool, OutOfMemoryError | StringLengthError | BigIntError | JsException>.Success { .. } => () Result<bool, OutOfMemoryError | StringLengthError | BigIntError | JsException>.Failure { error } => { return run core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error) } }
     i = i + 1
   }
-  let frozen = run prototypes.preventExtensions(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(output)) return output
+  let _frozen = run prototypes.preventExtensions(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(output)) return output
 }
 
 unsafe effect fn valuesIn<'m>(engine: &mut Engine<'m, host.Services>, ctx: *mut HeapHeader, state: *mut State, invocation: ?*mut u8, types: ?*const u8, count: u32, value: ValueBits) -> List<c.WasmValue> ! OutOfMemoryError | JsException ? &mut Allocator {
@@ -451,9 +450,9 @@ unsafe fn freeJob<'m>(engine: &mut Engine<'m, host.Services>, ctx: *mut HeapHead
 }
 unsafe effect fn settle<'m>(engine: &mut Engine<'m, host.Services>, ctx: *mut HeapHeader, state: *mut State, jobPointer: *mut Job) -> () ! OutOfMemoryError | JsException ? &mut Allocator {
   let result = run Effect.result(unsafe finish(&mut engine, ctx, state, jobPointer))
-  let mut reject = false let value = match move result { Result<ValueBits, OutOfMemoryError | JsException>.Success { value } => value Result<ValueBits, OutOfMemoryError | JsException>.Failure { error } => { if unsafe uncatchable(ctx) { fail move error } let materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error)) reject = true run unsafe keep(&mut engine, ctx, state, unsafe exceptions.take(unsafe runtime.contextRuntime(ctx))) } }
+  let mut reject = false let value = match move result { Result<ValueBits, OutOfMemoryError | JsException>.Success { value } => value Result<ValueBits, OutOfMemoryError | JsException>.Failure { error } => { if unsafe uncatchable(ctx) { fail move error } let _materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error)) reject = true run unsafe keep(&mut engine, ctx, state, unsafe exceptions.take(unsafe runtime.contextRuntime(ctx))) } }
   let a = () let job = unsafe Pointer.borrow<(), Job>(&a, jobPointer) let mut method = job.capability.resolve.view() if reject { method = job.capability.reject.view() } drop job
-  let keptValue15 = run promise.call(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(method), unsafe lendFor(ValueBits.Undefined), &[value]) let ignored = run unsafe keep(&mut engine, ctx, state, keptValue15.intoBits())
+  let keptValue15 = run promise.call(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(method), unsafe lendFor(ValueBits.Undefined), &[value]) let _ignored = run unsafe keep(&mut engine, ctx, state, keptValue15.intoBits())
 }
 unsafe effect fn invoke<'m>(engine: &mut Engine<'m, host.Services>, ctx: *mut HeapHeader, state: *mut State, function: ValueBits, arguments: &FrameSlots, promising: bool) -> ValueBits ! OutOfMemoryError | JsException ? &mut Allocator {
   let native = run unsafe required(&mut engine, ctx, state, function, 2)
@@ -693,13 +692,13 @@ unsafe effect fn invokeValue<'m>(engine: &mut Engine<'m, host.Services>, ctx: *m
     Result<ValueBits, OutOfMemoryError | JsException>.Success { value } => value
     Result<ValueBits, OutOfMemoryError | JsException>.Failure { error } => {
       if unsafe uncatchable(ctx) { fail move error }
-      let materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error))
+      let _materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error))
       let reason = run unsafe keep(&mut engine, ctx, state, unsafe exceptions.take(unsafe runtime.contextRuntime(ctx)))
       let memory = engine.memory let mut capability = run promise.newCapability(&mut engine, memory, unsafe lendRealm(&ctx, ctx), unsafe lendFor(ValueBits.Undefined))
       let output = run unsafe keep(&mut engine, ctx, state, capability.promise.take().intoBits())
       let reject = run unsafe keep(&mut engine, ctx, state, capability.reject.take().intoBits())
-      let resolve = run unsafe keep(&mut engine, ctx, state, capability.resolve.take().intoBits())
-      let keptValue19 = run promise.call(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(reject), unsafe lendFor(ValueBits.Undefined), &[reason]) let ignored = run unsafe keep(&mut engine, ctx, state, keptValue19.intoBits()) return output
+      let _resolve = run unsafe keep(&mut engine, ctx, state, capability.resolve.take().intoBits())
+      let keptValue19 = run promise.call(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(reject), unsafe lendFor(ValueBits.Undefined), &[reason]) let _ignored = run unsafe keep(&mut engine, ctx, state, keptValue19.intoBits()) return output
     }
   }
 }
@@ -743,14 +742,14 @@ unsafe effect fn resumeJob<'m>(engine: &mut Engine<'m, host.Services>, ctx: *mut
       Result<List<c.WasmValue>, OutOfMemoryError | JsException>.Success { value } => { converted = move value }
       Result<List<c.WasmValue>, OutOfMemoryError | JsException>.Failure { error } => {
         if unsafe uncatchable(ctx) { fail move error }
-        let materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error))
+        let _materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error))
         let reason = run unsafe keep(&mut engine, ctx, state, unsafe exceptions.take(unsafe runtime.contextRuntime(ctx)))
         exception = run unsafe thrown(&mut engine, ctx, state, reason)
       }
     }
   }
   let s = unsafe Pointer.borrowMut<(), State>(&mut a, state) let previous = s.current s.current = pointer drop s
-  let status = unsafe c.silk_wasm_resume(invocation, ptr(&converted), usize.toU32(converted.length()), exception)
+  let _status = unsafe c.silk_wasm_resume(invocation, ptr(&converted), usize.toU32(converted.length()), exception)
   let restored = unsafe Pointer.borrowMut<(), State>(&mut a, state) restored.current = previous
 }
 unsafe fn linkJob(state: *mut State, pointer: *mut Job) -> () {
@@ -767,10 +766,10 @@ unsafe effect fn advanceJob<'m>(engine: &mut Engine<'m, host.Services>, ctx: *mu
     }
     Result<(), OutOfMemoryError | JsException>.Failure { error } => {
       if unsafe uncatchable(ctx) { fail move error }
-      let materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error))
+      let _materialized = run Effect.result(core.materialize(&mut engine, unsafe lendRealm(&ctx, ctx), move error))
       let reason = run unsafe keep(&mut engine, ctx, state, unsafe exceptions.take(unsafe runtime.contextRuntime(ctx)))
       let a = () let job = unsafe Pointer.borrow<(), Job>(&a, current) let reject = job.capability.reject.view() drop job
-      let keptValue20 = run promise.call(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(reject), unsafe lendFor(ValueBits.Undefined), &[reason]) let ignored = run unsafe keep(&mut engine, ctx, state, keptValue20.intoBits())
+      let keptValue20 = run promise.call(&mut engine, unsafe lendRealm(&ctx, ctx), unsafe lendFor(reject), unsafe lendFor(ValueBits.Undefined), &[reason]) let _ignored = run unsafe keep(&mut engine, ctx, state, keptValue20.intoBits())
       return true
     }
   }
@@ -899,7 +898,7 @@ pub unsafe effect fn settleImport<'m>(engine: &mut Engine<'m, host.Services>, ct
   }
   // Resume inside this reaction, before unrelated reactions execute. Each
   // suspension has a unique token even when several await the same Promise.
-  let progressed = run unsafe poll(&mut engine, ctx, state)
+  let _progressed = run unsafe poll(&mut engine, ctx, state)
   return ValueBits.Undefined
 }
 export "C" fn silkWasmSharedWait(context: ?*mut u8, data: ?*mut u8, capacity: u64, offset: u64, expected: u64, timeout: i64, is64: u8) -> u32 {

@@ -13,7 +13,7 @@ import silkjs.js_heap { HeapCell, HeapHeader }
 import silkjs.js_core_types { ObjectData, FrameSlots, NativeErrorKind }
 import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_class_data as classes
 import silkjs.js_proxy_core as proxy
 import silkjs.js_promise as promises

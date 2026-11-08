@@ -23,7 +23,7 @@ import silkjs.js_heap { HeapCell, HeapHeader, HeapKind }
 import silkjs.js_core_types { RuntimeState, ContextState, FunctionBytecode, FunctionDebugInfo, ModuleDef, FrameSlots, StackFrame, NativeErrorKind }
 import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_strings { Strings }
 import libs.core.owners { Scope }
 import libs.core.owners as owners
@@ -58,7 +58,7 @@ pub fn create() -> State {
 pub unsafe fn dispose<'m, S: EngineServices>(engine: &mut Engine<'m, S>, context: *mut HeapHeader, state: *mut State) -> () {
   let rt = unsafe runtime.contextRuntime(context)
   unsafe debugger.clearBreakpoints(rt) unsafe debugger.exceptions(rt, false, false)
-  let resumed = unsafe debugger.resume(rt, 0)
+  let _resumed = unsafe debugger.resume(rt, 0)
   let mut runtimeAnchor = () let runtimeState = unsafe HeapCell.payloadMut<RuntimeState, ()>(&mut runtimeAnchor, rt)
   runtimeState.debugger.pauseRequested = false runtimeState.debugger.mode = 0 drop runtimeState
   let mut anchor = () let data = unsafe Pointer.borrowMut<(), State>(&mut anchor, state)

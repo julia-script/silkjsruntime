@@ -29,7 +29,7 @@ import silkjs.js_eval_compile as flags
 import silkjs.js_eval_errors as errors
 import silkjs.js_promise as promises
 import silkjs.js_atom_data as atoms
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.native_stack as stack
 import ext.script_cache
 
