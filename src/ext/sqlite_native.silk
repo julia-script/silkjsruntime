@@ -114,7 +114,7 @@ unsafe effect fn errorFields<'m>(engine: &mut Engine<'m, host.Services>, context
   run unsafe common.define(&mut engine, context, scope.values[0], b"errstr", description, 7)
 }
 unsafe effect fn integer<'m>(engine: &mut Engine<'m, host.Services>, context: *mut HeapHeader, v: ValueBits) -> i64 ! OutOfMemoryError | JsException ? &mut Allocator {
-  let mut n: i64 = 0 let outcome = run Effect.result(unsafe bigint.toBigInt64(&mut engine, unsafe lendRealm(&context, context), &mut n, v))
+  let mut n: i64 = 0 let outcome = run Effect.result(bigint.toBigInt64(&mut engine, unsafe lendRealm(&context, context), &mut n, unsafe lendFor(v)))
   match move outcome { Result<(), OutOfMemoryError | StringLengthError | JsException>.Success { .. } => () Result<(), OutOfMemoryError | StringLengthError | JsException>.Failure { error } => { return run core.materialize(&mut engine, unsafe lendRealm(&context, context), move error) } } return n
 }
 unsafe effect fn sqlValue<'m>(engine: &mut Engine<'m, host.Services>, context: *mut HeapHeader, value: ?*mut u8, big: bool) -> ValueBits ! OutOfMemoryError | JsException ? &mut Allocator {

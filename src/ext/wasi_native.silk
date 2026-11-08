@@ -231,7 +231,7 @@ unsafe fn publishVectors(call: &mut Call, vectors: ?*mut u8, count: u32, written
 }
 unsafe effect fn integer<'m>(engine: &mut Engine<'m, host.Services>, context: *mut HeapHeader, value: ValueBits) -> u64 ! OutOfMemoryError | JsException ? &mut Allocator {
   if !value.isBigInt() { return u32.toU64(number(value)) }
-  let mut n: i64 = 0 let outcome = run Effect.result(unsafe bigint.toBigInt64(&mut engine, unsafe lendRealm(&context, context), &mut n, value))
+  let mut n: i64 = 0 let outcome = run Effect.result(bigint.toBigInt64(&mut engine, unsafe lendRealm(&context, context), &mut n, unsafe lendFor(value)))
   match move outcome {
     Result<(), OutOfMemoryError | StringLengthError | JsException>.Success { .. } => ()
     Result<(), OutOfMemoryError | StringLengthError | JsException>.Failure { error } => { return run core.materialize(&mut engine, unsafe lendRealm(&context, context), move error) }

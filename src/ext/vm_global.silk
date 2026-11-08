@@ -116,7 +116,7 @@ unsafe effect fn restrictedLookup<'m, S: EngineServices>(engine: &mut Engine<'m,
     }
     drop data
     if denied {
-      run unsafe restricted.deny(context)
+      run restricted.deny(unsafe lendRealm(&context, context))
       fail JsException {}
     }
     let object = ValueBits.Object { reference: current }
@@ -225,7 +225,7 @@ pub unsafe effect fn ownProperty<'m, S: EngineServices>(engine: &mut Engine<'m, 
 }
 pub unsafe effect fn defineProperty<'m, S: EngineServices>(engine: &mut Engine<'m, S>, context: *mut HeapHeader, object: ValueBits, atom: u32, value: ValueBits, getter: ValueBits, setter: ValueBits, flags: u32) -> bool ! OutOfMemoryError | JsException ? &mut Allocator {
   let memory = engine.memory
-  let descriptor = run descriptorValues.fromPropertyDescriptor(&mut engine, memory, unsafe lendRealm(&context, context), unsafe lendFor(value), unsafe lendFor(getter), unsafe lendFor(setter), flags)
+  let descriptor = (run descriptorValues.fromPropertyDescriptor(&mut engine, memory, unsafe lendRealm(&context, context), unsafe lendFor(value), unsafe lendFor(getter), unsafe lendFor(setter), flags)).intoBits()
   let called = run Effect.result(unsafe keyed(&mut engine, context, object, b"defineProperty", atom, &[descriptor, ValueBits.Bool { value: (flags & JS_PROP_GLOBAL_DECLARATION) != 0 }]))
   unsafe gc.release(&mut engine, unsafe runtime.contextRuntime(context), descriptor)
   let result = match move called { Result<ValueBits, OutOfMemoryError | JsException>.Success { value: returned } => returned Result<ValueBits, OutOfMemoryError | JsException>.Failure { error } => { fail move error } }

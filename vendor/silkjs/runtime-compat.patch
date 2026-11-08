@@ -1,0 +1,188 @@
+--- /dev/null
++++ b/native/kevent.c
+@@ -0,0 +1,12 @@
++/* Keep the engine's kevent capture contract separate from the standard
++ * library declaration. The kernel retains each registration's udata, while
++ * the event output and timeout storage are only used during this call. */
++#include <sys/types.h>
++#include <sys/event.h>
++#include <time.h>
++
++int silkjs_kevent(int queue, const struct kevent *changes, int change_count,
++                  struct kevent *events, int event_count,
++                  const struct timespec *timeout) {
++    return kevent(queue, changes, change_count, events, event_count, timeout);
++}
+--- a/silk.toml
++++ b/silk.toml
+@@ -69,3 +69,3 @@
+ [native]
+ function-order = "startup.order"
+-sources = [{ c = "native/text_align.c" }]
++sources = [{ c = "native/text_align.c" }, { c = "native/kevent.c", os = "macos" }]
+--- a/src/js_core_types.silk
++++ b/src/js_core_types.silk
+@@ -1429,6 +1429,8 @@
+ /// One object's data. The small fields share a word, as in the source's JSObject:
+ /// the boolean properties as flag bits, a 16-bit class id and the weak count.
+ pub struct ObjectData {
++  /// Allocation realm retained for Node stack formatting, independent of mutable prototypes.
++  pub creationRealm: ?*mut HeapHeader,
+   flags: u8,
+   /// OBJECT_ROLE_* bits, in the byte the flags leave before classBits.
+   roles: u8,
+@@ -1447,7 +1449,7 @@
+     let mut flags = OBJECT_EXTENSIBLE
+     if exotic { flags = u8.bitOr(flags, OBJECT_EXOTIC) }
+     if fastArray { flags = u8.bitOr(flags, OBJECT_FAST_ARRAY) }
+-    return ObjectData { flags: flags, roles: 0, classBits: classBits(classId), weakRefCount: 0, shape: shape, slotList: move properties, payload: move payload }
++    return ObjectData { creationRealm: Pointer.null<HeapHeader>(), flags: flags, roles: 0, classBits: classBits(classId), weakRefCount: 0, shape: shape, slotList: move properties, payload: move payload }
+   }
+   /// The class id. Like the source, objects keep 16 bits of it.
+   @inlineAlways
+--- a/src/js_errors.silk
++++ b/src/js_errors.silk
+@@ -326,22 +326,7 @@
+   filename: Option<ValueBits>, line: i32, column: i32, flags: u32) -> () ? &mut Allocator {
+   if !object.view().isObject() { return () }
+   let rt = realm.runtime()
+-  if nodeStacksEnabled(realm) {
+-    let captured = run capturedNodeStack(&mut hooks, memory, realm, flags)
+-    if captured.isException() { return () }
+-    let attached = run unsafe defineAttached(&mut hooks, realm, object, atoms.JS_ATOM_stack, captured)
+-    if attached { run nodeStackLazy(&mut hooks, memory, realm, object) }
+-    return ()
+-  }
+-  let mut builder = StringBuilder.make()
+-  let mut source = Option<ValueBits>.none()
+   match &filename {
+-    Option<ValueBits>.Some { value } => { source = Option<ValueBits>.some(value) }
+-    Option<ValueBits>.None => ()
+-  }
+-  let prefix = run Effect.result(trace.appendOrigin(&mut builder, move source, line, column))
+-  let mut buffered = bufferStatus(move prefix)
+-  match move filename {
+     Option<ValueBits>.Some { value } => {
+       let copied = run Effect.result(copyFilename(realm, unsafe lendBits(&value, value)))
+       let text = run stringResult(&mut hooks, memory, realm, move copied)
+@@ -352,6 +337,21 @@
+     }
+     Option<ValueBits>.None => ()
+   }
++  if nodeStacksEnabled(realm) {
++    let captured = run capturedNodeStack(&mut hooks, memory, realm, flags)
++    if captured.isException() { return () }
++    let attached = run unsafe defineAttached(&mut hooks, realm, object, atoms.JS_ATOM_stack, captured)
++    if attached { run nodeStackLazy(&mut hooks, memory, realm, object) }
++    return ()
++  }
++  let mut builder = StringBuilder.make()
++  let mut source = Option<ValueBits>.none()
++  match &filename {
++    Option<ValueBits>.Some { value } => { source = Option<ValueBits>.some(value) }
++    Option<ValueBits>.None => ()
++  }
++  let prefix = run Effect.result(trace.appendOrigin(&mut builder, move source, line, column))
++  let mut buffered = bufferStatus(move prefix)
+   if buffered == BufferStatus.Ready {
+     let frames = run Effect.result(unsafe trace.appendFrames(rt, &mut builder, flags))
+     buffered = bufferStatus(move frames)
+--- a/src/js_gc.silk
++++ b/src/js_gc.silk
+@@ -1730,6 +1730,10 @@
+   require(!object.freeMark())
+   let classId = object.classId()
+   unsafe tracer.edgeAs(object.shape, operation)
++  match Pointer.nonNullMut<HeapHeader>(object.creationRealm) {
++    Option<*mut HeapHeader>.Some { value } => { unsafe tracer.edgeAs(value, operation) }
++    _ => ()
++  }
+   let metadata = unsafe HeapCell.payload<ShapeData, ()>(&anchor, object.shape)
+   // Counts are read once: the edge updates store to headers, which the
+   // compiler cannot tell apart from these lists. An object has a slot for each
+@@ -1826,6 +1830,7 @@
+       let shape = object.shape
+       let classId = object.classId()
+       unsafe tracer.header(shape)
++      unsafe tracer.optional(object.creationRealm)
+       let metadata = unsafe HeapCell.payload<ShapeData, ()>(&anchor, shape)
+       let mut index: usize = 0
+       while index < metadata.properties.length() {
+@@ -2325,6 +2330,8 @@
+   // js_object_allocate.slotsOverPayload).
+   let small = classId == JS_CLASS_OBJECT && object.slotsInCell()
+   let properties = object.takeSlots()
++  let realm = object.creationRealm
++  object.creationRealm = Pointer.null<HeapHeader>()
+   drop object
+   // Read once: releases store to headers the compiler cannot tell from the list.
+   let slotCount = properties.length()
+@@ -2386,6 +2393,7 @@
+     // its dying elements straight onto the zero stack, without the class hook.
+     if classId != JS_CLASS_ARRAY || !unsafe finishFastArray(&mut hooks, runtime, node, linked) { unsafe finalizeObjectClass(&mut hooks, runtime, node, classId) }
+   }
++  unsafe releaseOptional(&mut hooks, runtime, realm)
+   let finalizedObject = unsafe HeapCell.payloadMut<ObjectData, ()>(&mut anchor, node)
+   finalizedObject.setClassId(0)
+   // A small cell's payload is its Empty tag word and slot bytes: write, never drop, it.
+--- a/src/js_heap_snapshot.silk
++++ b/src/js_heap_snapshot.silk
+@@ -80,6 +80,7 @@
+   ! OutOfMemoryError ? &mut Allocator {
+   let anchor = () let data = unsafe HeapCell.payload<ObjectData, ()>(&anchor, cell)
+   run unsafe optional(&mut graph, index, data.shape, b"shape", 0)
++  run unsafe optional(&mut graph, index, data.creationRealm, b"creationRealm", 0)
+   if data.slotsOwned() { graph.backing(index, data.slotCapacity() * Layout.of<SlotBits>().bytes) }
+   let shape = unsafe HeapCell.payload<ShapeData, ()>(&anchor, data.shape)
+   let mut i: usize = 0
+--- a/src/js_object_allocate.silk
++++ b/src/js_object_allocate.silk
+@@ -337,6 +337,7 @@
+   // Every field is written in place before the node is read or published.
+   let mut nodeAnchor = ()
+   let data = unsafe HeapCell.payloadMut<ObjectData, ()>(&mut nodeAnchor, fresh)
++  data.creationRealm = Pointer.null<HeapHeader>()
+   data.setIsStandardArrayPrototype(false) data.setExtensible(true) data.setFreeMark(false) data.setIsExotic(exotic)
+   data.setFastArray(fast) data.setIsConstructor(false) data.setHasImmutablePrototype(false)
+   data.setIsHtmlDda(false) data.setIsPrototype(false) data.setClassId(classId) data.weakRefCount = 0 data.shape = ownedShape
+@@ -362,6 +363,9 @@
+     let finished = run Intrinsic.catchFailure<OutOfMemoryError>(unsafe arrayLengthRetired(realm, fresh), failedOom)
+     match move finished {
+       Retired { shape: retired } => {
++        let mut creationAnchor = () let freshData = unsafe HeapCell.payloadMut<ObjectData, ()>(&mut creationAnchor, fresh)
++        freshData.creationRealm = realm.context() drop freshData
++        unsafe HeapCell.retain(realm.context())
+         unsafe gc.publish(runtime, fresh)
+         unsafe gc.releaseOptional(&mut hooks, runtime, retired)
+         return ValueBits.Object { reference: fresh }
+@@ -372,6 +376,9 @@
+       }
+     }
+   }
++  let mut creationAnchor = () let freshData = unsafe HeapCell.payloadMut<ObjectData, ()>(&mut creationAnchor, fresh)
++  freshData.creationRealm = realm.context() drop freshData
++  unsafe HeapCell.retain(realm.context())
+   unsafe gc.publishObject(runtime, fresh)
+   return ValueBits.Object { reference: fresh }
+ }
+@@ -443,6 +450,9 @@
+   let initialized = run Intrinsic.catchFailure<OutOfMemoryError>(unsafe initializeRetired(realm, node, &mut properties), failedOom)
+   match move initialized {
+     Retired { shape: retired } => {
++      let mut creationAnchor = () let created = unsafe HeapCell.payloadMut<ObjectData, ()>(&mut creationAnchor, node)
++      created.creationRealm = realm.context() drop created
++      unsafe HeapCell.retain(realm.context())
+       unsafe gc.publish(runtime, node)
+       unsafe gc.releaseOptional(&mut hooks, runtime, retired)
+       return ValueBits.Object { reference: node }
+--- a/src/js_os_events_platform.silk
++++ b/src/js_os_events_platform.silk
+@@ -39,7 +39,7 @@
+ // no capture. Do not extend that promise to the changes array.
+ @foreign(noCapture: ("events", "timeout"))
+ unsafe extern "C" fn kevent(fd: i32, changes: ?*const KernelEvent, count: i32,
+-  events: ?*mut KernelEvent, capacity: i32, timeout: ?*const Timespec) -> i32
++  events: ?*mut KernelEvent, capacity: i32, timeout: ?*const Timespec) -> i32 as "silkjs_kevent"
+ @foreign(noCapture: .("mask"))
+ unsafe extern "C" fn signalfd(fd: i32, mask: *const SignalSet, flags: i32) -> i32
+ @foreign(noCapture: .("set"))

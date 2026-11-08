@@ -466,7 +466,7 @@ unsafe fn handleRealm(handle: ValueBits) -> *mut HeapHeader {
 }
 pub unsafe effect fn initializeSynthetic<'m, S: EngineServices>(engine: &mut Engine<'m, S>,
   context: *mut HeapHeader, module: *mut HeapHeader) -> () ! OutOfMemoryError | JsException ? &mut Allocator {
-  let callback = unsafe modules.getPrivateValue(unsafe CellRef<ModuleDef>.of(module))
+  let callback = modules.getPrivateValue(unsafe CellRef<ModuleDef>.of(module)).intoBits()
   let called = run Effect.result(promises.call(&mut engine, unsafe lendRealm(&context, context), unsafe lendFor(callback), unsafe lendFor(ValueBits.Undefined), &[]))
   let rt = unsafe runtime.contextRuntime(context) unsafe gc.release(&mut engine, rt, callback)
   match move called {

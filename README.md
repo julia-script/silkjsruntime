@@ -27,7 +27,7 @@ python3 tools/build.py
 
 Use `SILK_CLANG` to select a particular Clang executable. `python3 tools/build.py --release` builds with speed optimization; `--output PATH` selects the output executable.
 
-The build prepares the exact SilkJS revision declared in `silk.toml`, verifies its archive checksum, and rejects modifications to an already prepared dependency tree. It also prepares the pinned WAMR/uvwasi dependencies, embeds the JavaScript extensions, and links the native executable. An installed Node executable is not required to build or run it.
+The build prepares the exact SilkJS revision declared in `silk.toml`, verifies its archive checksum, applies the declared [compatibility patch](vendor/silkjs/README.md), and rejects unexpected modifications to an already prepared dependency tree. It also prepares the pinned WAMR/uvwasi dependencies, embeds the JavaScript extensions, and links the native executable. An installed Node executable is not required to build or run it.
 
 ## Run
 

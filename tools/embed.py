@@ -41,6 +41,8 @@ def cache_build_identity(source, debug, manifest, engine, environment):
         paths = set((root / 'src').rglob('*.silk'))
         paths.update((root / 'src').rglob('*.c'))
         paths.update((root / 'src').rglob('*.h'))
+        paths.update((root / 'native').rglob('*.c'))
+        paths.update((root / 'native').rglob('*.h'))
         paths.update(root.glob('*.toml'))
         paths.update((root / 'tools').glob('*.py'))
         for path in sorted(paths):
