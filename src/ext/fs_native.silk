@@ -26,7 +26,7 @@ import silkjs.js_exceptions { JsException }
 import silkjs.js_string_types { StringLengthError }
 import silkjs.js_exceptions as exceptions
 import silkjs.js_runtime as runtime
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import libs.core.owners { Scope }
 import libs.core.owners as owners
 import libs.core.common as common
@@ -38,7 +38,6 @@ import silkjs.js_buffer_storage as buffers
 import silkjs.js_bigint { BigInt, BigIntError }
 import silkjs.js_bigint_coercions as bigints
 import ext.uv_fs { UvStat, UvStatfs, UvTimespec }
-import ext.uv_fs as uv
 import ext.fs_descriptors as descriptors
 import ext.fs_ops as ops
 

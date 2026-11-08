@@ -29,10 +29,11 @@ import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
 import silkjs.js_string_types { StringLengthError }
 import silkjs.js_proxy_core as core
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_binary_object_writer as writer
 import silkjs.js_binary_object_reader as reader
 import silkjs.js_debug_positions as positions
+import silkjs.js_backtrace as backtrace
 import silkjs.js_runtime as runtime
 import silkjs.js_gc as gc
 import silkjs.native_stack as stack
@@ -158,6 +159,8 @@ effect fn copyStorage(storage: &ByteStorage) -> ByteStorage ! OutOfMemoryError ?
 unsafe effect fn appendMetadata<'m, S: EngineServices>(engine: &mut Engine<'m, S>, context: *mut HeapHeader,
   value: ValueBits, bytes: &mut List<u8>) -> usize ! OutOfMemoryError | JsException ? &mut Allocator {
   run checkStack(&mut engine, context)
+  // The engine defers line-table encoding; the cache sidecar needs owned bytes.
+  run unsafe backtrace.ensureLines(reference(value))
   let anchor = () let code = unsafe HeapCell.payload<FunctionBytecode, ()>(&anchor, reference(value))
   let mut flags: u8 = 0 if code.scriptIsEval { flags = 1 }
   let mut mapLength: usize = 0
@@ -453,6 +456,7 @@ unsafe effect fn readBody<'m, S: EngineServices>(engine: &mut Engine<'m, S>, con
 unsafe effect fn transfer<'m, S: EngineServices>(engine: &mut Engine<'m, S>, context: *mut HeapHeader,
   source: ValueBits, destination: ValueBits) -> () ! OutOfMemoryError | JsException ? &mut Allocator {
   run checkStack(&mut engine, context)
+  run unsafe backtrace.ensureLines(reference(source))
   let sourceAnchor = () let original = unsafe HeapCell.payload<FunctionBytecode, ()>(&sourceAnchor, reference(source))
   let mut anchor = () let target = unsafe HeapCell.payloadMut<FunctionBytecode, ()>(&mut anchor, reference(destination))
   target.scriptId = original.scriptId target.scriptIsEval = original.scriptIsEval

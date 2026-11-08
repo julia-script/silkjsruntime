@@ -19,7 +19,7 @@ import silkjs.js_heap { HeapCell, HeapHeader }
 import silkjs.js_value { ValueBits }
 import silkjs.js_core_types { ContextState, ObjectData, ObjectPayload, FrameSlots, NativeErrorKind, JS_PROP_CONFIGURABLE, JS_PROP_THROW }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_string_types { StringLengthError }
 import silkjs.js_bigint { BigIntError }
 import silkjs.js_stack_frames { FrameSnapshot }
@@ -119,11 +119,11 @@ pub unsafe effect fn capture<'m, S: EngineServices>(engine: &mut Engine<'m, S>,
     return ValueBits.Bool { value: true }
   }
   if number == 0.0 || number == -1.0 {
-    let realm = run unsafe constructors.getFunctionRealm(&mut engine, unsafe lendRealm(&context, context), skip)
+    let realm = run constructors.getFunctionRealm(&mut engine, unsafe lendRealm(&context, context), unsafe lendFor(skip))
     if number == 0.0 {
       let formatter = unsafe common.argument(argv, 2)
       let mut anchor = ()
-      let state = unsafe HeapCell.payloadMut<ContextState, ()>(&mut anchor, realm)
+      let state = unsafe HeapCell.payloadMut<ContextState, ()>(&mut anchor, realm.context())
       let previousConstructor = state.nodeErrorConstructor
       let previousFormatter = state.nodeErrorFormatter
       state.nodeErrorConstructor = unsafe skip.retained()
@@ -133,7 +133,7 @@ pub unsafe effect fn capture<'m, S: EngineServices>(engine: &mut Engine<'m, S>,
       unsafe owners.release(&mut engine, context, previousFormatter)
       return ValueBits.Undefined
     }
-    let limit = match unsafe nodeStack.limit(realm) {
+    let limit = match nodeStack.limit(realm) {
       Option<usize>.Some { value } => value
       Option<usize>.None => { return ValueBits.Undefined }
     }

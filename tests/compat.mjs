@@ -120,7 +120,7 @@ let passed = 0, failed = 0;
 try {
   if (!cases.some(item => filter.test(item.name))) throw new Error('No compatibility scenarios match ' + filter);
   for (const scenario of cases.filter(item => filter.test(item.name))) {
-    const options = { cwd: directory, encoding: 'utf8', timeout: 15000, env: { ...process.env, NODE_REFERENCE: reference, NO_COLOR: '1', NODE_DEBUG: '' } };
+    const options = { cwd: directory, encoding: 'utf8', timeout: Number(process.env.SILKJS_TEST_TIMEOUT_MS || 15000), env: { ...process.env, NODE_REFERENCE: reference, NO_COLOR: '1', NODE_DEBUG: '' } };
     const expected = spawnSync(reference, scenario.args, options);
     const actual = spawnSync(runtime, scenario.args, options);
     try {

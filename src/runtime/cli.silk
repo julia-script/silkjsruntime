@@ -1,0 +1,202 @@
+//! Runtime commands described by Silk's CLI parser. Legacy Node invocations pass through.
+import silk.cli.command { Command, CommandLine, Opt }
+import silk.cli.parse { Cli, Parsed, Variable }
+import silk.collections.bytes { Bytes }
+import silk.collections.list { List }
+import silk.core.effect { Effect }
+import silk.core.option { Option }
+import silk.core.result { Result }
+import silk.io.writer { Writer, WriterError }
+import silk.io.writer_native { StdoutWriter, StderrWriter }
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+
+union Action {
+  Run { pub script: Bytes, pub arguments: List<Bytes> },
+  Eval { pub code: Bytes, pub print: bool, pub inputType: Option<Bytes>, pub arguments: List<Bytes> },
+  Check { pub file: Option<Bytes>, pub inputType: Option<Bytes> },
+  Repl,
+  Test { pub files: List<Bytes>, pub reporter: List<Bytes>, pub namePattern: List<Bytes>, pub only: bool, pub watch: bool },
+}
+
+impl CommandLine for Action {
+  static fn command() -> Command<Self> {
+    return Command<Self>.make("silkjsruntime", "Run JavaScript and TypeScript, package scripts, and Node tests.\nPass a file directly to execute it; start without arguments for the REPL.\nUse --help-options for Node-compatible runtime flags.")
+      |> Command.withVersion("0.1.0 (QuickJS; Node 24 target)")
+      |> Command.variant("Run", "Run a package.json script")
+      |> Command.variant("Eval", "Evaluate JavaScript")
+      |> Command.variant("Check", "Check syntax without executing; read stdin when no file is given")
+      |> Command.variant("Repl", "Start the interactive JavaScript REPL")
+      |> Command.variant("Test", "Run Node tests")
+      |> Command.arg("script", Opt.about("Package script name") |> Opt.required())
+      |> Command.arg("code", Opt.about("JavaScript source") |> Opt.required())
+      |> Command.arg("file", Opt.about("File to check, or - for stdin"))
+      |> Command.arg("arguments", Opt.about("Arguments passed unchanged to the script"))
+      |> Command.arg("files", Opt.about("Test files; discover tests when omitted"))
+      |> Command.option("print", Opt.about("Print the evaluation result") |> Opt.short("p"))
+      |> Command.option("inputType", Opt.about("Source type") |> Opt.choice("commonjs") |> Opt.choice("module") |> Opt.choice("commonjs-typescript") |> Opt.choice("module-typescript"))
+      |> Command.option("reporter", Opt.about("Test reporter; may be repeated"))
+      |> Command.option("namePattern", Opt.about("Run tests matching this regular expression; may be repeated"))
+      |> Command.option("only", Opt.about("Run only tests marked as exclusive"))
+      |> Command.option("watch", Opt.about("Rerun tests when files change"))
+  }
+}
+
+/// Either preserve a Node-compatible invocation, use normalized runtime arguments, or exit.
+pub union Invocation {
+  Passthrough,
+  Arguments { pub values: List<Bytes> },
+  Exit { pub code: i32 },
+}
+
+fn same(left: &[u8], right: &[u8]) -> bool {
+  if left.length != right.length { return false }
+  let mut at: usize = 0
+  while at < left.length { if left[at] != right[at] { return false } at = at + 1 }
+  return true
+}
+
+effect fn append(arguments: &mut List<Bytes>, value: &[u8]) -> () ! OutOfMemoryError ? &mut Allocator {
+  run arguments.append(run Bytes.copy(value))
+}
+
+effect fn appendAll(arguments: &mut List<Bytes>, values: &List<Bytes>) -> () ! OutOfMemoryError ? &mut Allocator {
+  let mut at: usize = 0
+  while at < values.length() { run append(&mut arguments, values.asSlice()[at].asSlice()) at = at + 1 }
+}
+
+effect fn option(arguments: &mut List<Bytes>, name: &[u8], value: &[u8]) -> () ! OutOfMemoryError ? &mut Allocator {
+  let mut joined = run Bytes.copy(name)
+  run joined.append(b"=")
+  run joined.append(value)
+  run arguments.append(move joined)
+}
+
+effect fn inputType(arguments: &mut List<Bytes>, value: &Option<Bytes>) -> () ! OutOfMemoryError ? &mut Allocator {
+  if let Option<Bytes>.Some { value: text } = &value.* { run option(&mut arguments, b"--input-type", text.asSlice()) }
+}
+
+// Run/eval stop parsing at their first operand. In particular, --help after the
+// script name or source belongs to the script, not to this CLI. Bytes preserve
+// empty arguments, non-UTF-8 paths, and shell metacharacters without re-tokenizing.
+effect fn commandArguments(arguments: &List<Bytes>) -> List<Bytes> ! OutOfMemoryError ? &mut Allocator {
+  let mut result = List<Bytes>.make()
+  run append(&mut result, arguments.asSlice()[0].asSlice())
+  let action = arguments.asSlice()[1].asSlice()
+  if same(action, b"help") {
+    let mut at: usize = 2
+    while at < arguments.length() { run append(&mut result, arguments.asSlice()[at].asSlice()) at = at + 1 }
+    run append(&mut result, b"--help")
+    return move result
+  }
+  if same(action, b"version") || same(action, b"-v") {
+    run append(&mut result, b"--version")
+    return move result
+  }
+  run append(&mut result, action)
+  let tail = same(action, b"run") || same(action, b"eval")
+  let mut at: usize = 2
+  while at < arguments.length() {
+    let token = arguments.asSlice()[at].asSlice()
+    if tail && same(token, b"--") {
+      while at < arguments.length() { run append(&mut result, arguments.asSlice()[at].asSlice()) at = at + 1 }
+      return move result
+    }
+    if tail && (token.length == 0 || token[0] != 45) {
+      run append(&mut result, b"--")
+      run append(&mut result, token)
+      at = at + 1
+      if at < arguments.length() && same(arguments.asSlice()[at].asSlice(), b"--") { at = at + 1 }
+      while at < arguments.length() { run append(&mut result, arguments.asSlice()[at].asSlice()) at = at + 1 }
+      return move result
+    }
+    run append(&mut result, token)
+    at = at + 1
+    if same(action, b"eval") && same(token, b"--input-type") && at < arguments.length() {
+      run append(&mut result, arguments.asSlice()[at].asSlice())
+      at = at + 1
+    }
+  }
+  return move result
+}
+
+effect fn lower(action: Action, executable: &[u8]) -> List<Bytes> ! OutOfMemoryError ? &mut Allocator {
+  let mut result = List<Bytes>.make()
+  run append(&mut result, executable)
+  match move action {
+    Action.Run { script, arguments } => {
+      run option(&mut result, b"--run", script.asSlice())
+      run append(&mut result, b"--")
+      run appendAll(&mut result, &arguments)
+    }
+    Action.Eval { code, print, inputType: sourceType, arguments } => {
+      run inputType(&mut result, &sourceType)
+      if print { run append(&mut result, b"--print") }
+      run option(&mut result, b"--eval", code.asSlice())
+      run append(&mut result, b"--")
+      run appendAll(&mut result, &arguments)
+    }
+    Action.Check { file, inputType: sourceType } => {
+      run append(&mut result, b"--check")
+      run inputType(&mut result, &sourceType)
+      if let Option<Bytes>.Some { value } = &file {
+        run append(&mut result, b"--")
+        run append(&mut result, value.asSlice())
+      }
+    }
+    Action.Repl => { run append(&mut result, b"--interactive") }
+    Action.Test { files, reporter, namePattern, only, watch } => {
+      run append(&mut result, b"--test")
+      if only { run append(&mut result, b"--test-only") }
+      if watch { run append(&mut result, b"--watch") }
+      let mut at: usize = 0
+      while at < reporter.length() { run option(&mut result, b"--test-reporter", reporter.asSlice()[at].asSlice()) at = at + 1 }
+      at = 0
+      while at < namePattern.length() { run option(&mut result, b"--test-name-pattern", namePattern.asSlice()[at].asSlice()) at = at + 1 }
+      run append(&mut result, b"--")
+      run appendAll(&mut result, &files)
+    }
+  }
+  return move result
+}
+
+effect fn parsed(arguments: &List<Bytes>) -> Invocation ! OutOfMemoryError | WriterError ? &mut Allocator {
+  let normalized = run commandArguments(arguments)
+  let environment: [Variable<'static>; 0] = []
+  let result = run Cli.parseBytes<Action>(normalized.asSlice(), &environment)
+  let mut out = StdoutWriter.make()
+  let mut err = StderrWriter.make()
+  match move result {
+    Parsed<Action>.Run { value } => {
+      return Invocation.Arguments { values: run lower(move value, arguments.asSlice()[0].asSlice()) }
+    }
+    Parsed<Action>.Help { command } => {
+      run Cli.writeHelp<Action>(command) |> Effect.provideMut<Writer>(&mut out)
+      return Invocation.Exit { code: 0 }
+    }
+    Parsed<Action>.Version => {
+      run Cli.writeVersion<Action>() |> Effect.provideMut<Writer>(&mut out)
+      return Invocation.Exit { code: 0 }
+    }
+    Parsed<Action>.Failed { error } => {
+      run Cli.writeError(&error) |> Effect.provideMut<Writer>(&mut err)
+      return Invocation.Exit { code: 2 }
+    }
+  }
+}
+
+/// Parse command-style invocations and root help; leave script paths and Node flags unchanged.
+pub effect fn prepare(arguments: &List<Bytes>) -> Invocation ! OutOfMemoryError ? &mut Allocator {
+  if arguments.length() < 2 { return Invocation.Passthrough }
+  let first = arguments.asSlice()[1].asSlice()
+  if !same(first, b"run") && !same(first, b"eval") && !same(first, b"check") && !same(first, b"repl") && !same(first, b"test")
+    && !same(first, b"help") && !same(first, b"version") && !same(first, b"--help") && !same(first, b"-h") && !same(first, b"--version") && !same(first, b"-v") {
+    return Invocation.Passthrough
+  }
+  let result = run Effect.result(parsed(arguments))
+  return match move result {
+    Result<Invocation, OutOfMemoryError | WriterError>.Success { value } => move value
+    Result<Invocation, OutOfMemoryError | WriterError>.Failure { error } => {
+      match move error { OutOfMemoryError exhausted => { fail move exhausted } WriterError _error => { return Invocation.Exit { code: 1 } } }
+    }
+  }
+}

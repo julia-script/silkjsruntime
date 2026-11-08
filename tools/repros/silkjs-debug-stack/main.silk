@@ -1,0 +1,64 @@
+import silk.mem.allocator { Allocator, OutOfMemoryError }
+import silk.core.effect { Effect }
+import silk.core.result { Result }
+import silk.collections.list { List }
+import silk.io.writer { Writer }
+import silk.io.writer_native { StdoutWriter, StderrWriter }
+import silkjs.js_engine { Engine }
+import silkjs.js_engine_no_host { NoHostServices }
+import silkjs.js_atomics_native { WaiterDomain, SynchronizationError }
+import silkjs.js_owned_value { Value, lendFor }
+import silkjs.js_realm { lendRealm }
+import silkjs.js_exceptions { JsException }
+import silkjs.js_exceptions as exceptions
+import silkjs.js_runtime as runtime
+import silkjs.js_gc as gc
+import silkjs.js_intrinsic_install as intrinsics
+import silkjs.js_debugger as debugger
+import silkjs.js_eval as evaluation
+import silkjs.js_eval_compile as flags
+import silkjs.js_value_print as printing
+import silkjs.js_value_print { Options }
+import silkjs.native_stack as stack
+import silkjs.runtime_memory { RuntimeAllocator }
+
+effect fn probe() -> i32 ! OutOfMemoryError | SynchronizationError | JsException ? &mut Allocator {
+  let domain = run WaiterDomain.make()
+  let mut allocator = run RuntimeAllocator.make(Allocator.systemAllocatorProvider())
+  let memory = run allocator.observe()
+  let mut engine = Engine { memory: &memory, domain: domain.handle(), services: NoHostServices {} }
+  let rt = run runtime.allocateRuntimeStorage(stack.currentFrameAddress()) |> Effect.provideMut<Allocator>(&mut allocator)
+  unsafe debugger.configureCompilation(rt, true)
+  let context = run unsafe intrinsics.create(&mut engine, &memory, rt) |> Effect.provideMut<Allocator>(&mut allocator)
+  let realm = unsafe lendRealm(&context, context)
+  let compiled = run Effect.result(evaluation.evaluate(&mut engine, &memory, realm, b"new Function(\"x\", Array.from({length:40}, (_, i) => `${i ? \"else \" : \"\"}if(x===${i})return ${i};`).join(\"\"));", b"case.js", flags.TYPE_GLOBAL)) |> Effect.provideMut<Allocator>(&mut allocator)
+  let mut status: i32 = 0
+  match move compiled {
+    Result<Value, JsException>.Success { value } => { realm.release(&mut engine, move value) StderrWriter.print("compile succeeded\n", &.{}) }
+    Result<Value, JsException>.Failure { error: _failure } => {
+      status = 1
+      let exception = unsafe exceptions.take(rt)
+      let printed = run Effect.result(printing.printValue(&mut engine, &memory, realm, unsafe lendFor(exception), Options.defaults())) |> Effect.provideMut<Allocator>(&mut allocator)
+      match move printed {
+        Result<List<u8>, OutOfMemoryError | JsException>.Success { value: bytes } => {
+          let mut writer = StdoutWriter.make()
+          let _written = run Effect.result(Writer.writeAll(bytes.asSlice())) |> Effect.provideMut<Writer>(&mut writer)
+          StderrWriter.print("\n", &.{})
+        }
+        _ => { StderrWriter.print("exception formatting failed\n", &.{}) }
+      }
+      unsafe gc.release(&mut engine, rt, exception)
+    }
+  }
+  unsafe gc.releaseHeader(&mut engine, rt, context)
+  run unsafe gc.destroyRuntime(&mut engine, rt) |> Effect.provideMut<Allocator>(&mut allocator)
+  return status
+}
+pub effect fn main() -> i32 {
+  let mut system = Allocator.systemAllocatorProvider()
+  let result = run Effect.result(probe()) |> Effect.provideMut<Allocator>(&mut system)
+  return match move result {
+    Result<i32, OutOfMemoryError | SynchronizationError | JsException>.Success { value } => value
+    _ => { StderrWriter.print("probe setup failed\n", &.{}) return 2 }
+  }
+}

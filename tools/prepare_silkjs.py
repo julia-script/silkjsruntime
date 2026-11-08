@@ -5,6 +5,7 @@ import hashlib
 import io
 import os
 import re
+import subprocess
 import tarfile
 import tempfile
 import urllib.request
@@ -59,8 +60,25 @@ def prepare(manifest):
             with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as archive:
                 archive.extractall(stage, members=_members(archive, root_name), filter='data')
             staged = stage / root_name
+            pristine = _files(staged)
+            for patch in pin.get('patches', []):
+                subprocess.run(
+                    ['patch', '--batch', '--forward', '--fuzz=0', '-p1', '-i', str((ROOT / patch).resolve())],
+                    cwd=staged, check=True, stdin=subprocess.DEVNULL,
+                )
             if source.exists():
-                if _files(source) != _files(staged):
+                existing = _files(source)
+                if existing == _files(staged):
+                    pass
+                elif existing == pristine:
+                    backup = stage / 'previous-source'
+                    source.rename(backup)
+                    try:
+                        staged.rename(source)
+                    except BaseException:
+                        backup.rename(source)
+                        raise
+                else:
                     raise RuntimeError(f'Existing SilkJS sources differ from pinned source: {source}')
             else:
                 staged.rename(source)

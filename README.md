@@ -27,7 +27,11 @@ python3 tools/build.py
 
 Use `SILK_CLANG` to select a particular Clang executable. `python3 tools/build.py --release` builds with speed optimization; `--output PATH` selects the output executable.
 
-The build prepares the exact SilkJS revision declared in `silk.toml`, verifies its archive checksum, and rejects modifications to an already prepared dependency tree. It also prepares the pinned WAMR/uvwasi dependencies, embeds the JavaScript extensions, and links the native executable. An installed Node executable is not required to build or run it.
+The build prepares the exact SilkJS revision declared in `silk.toml`, verifies its archive checksum, applies the declared [compatibility patch](vendor/silkjs/README.md), and rejects unexpected modifications to an already prepared dependency tree. It also prepares the pinned WAMR/uvwasi dependencies, embeds the JavaScript extensions, and links the native executable. An installed Node executable is not required to build or run it.
+
+After the build script has prepared the dependencies and embedded modules, `silk build` can rebuild the package. Both build commands default to unoptimized code with debug symbols. The package executable is written to `build/llvm/<target>/debug/silkjsruntime`; use `silk build --release` for an optimized package build.
+
+The main isolate uses up to 4 MiB of native stack, bounded by the OS stack with room for error handling. Explicit worker stack limits are preserved. Small worker limits can still be exhausted by the engine's larger unoptimized parser frames; [silkjs#780](https://github.com/julia-script/silkjs/issues/780) tracks that remaining debug-build limitation.
 
 ## Run
 
@@ -35,10 +39,15 @@ The build prepares the exact SilkJS revision declared in `silk.toml`, verifies i
 ./build/silkjsruntime app.js
 ./build/silkjsruntime app.mjs
 ./build/silkjsruntime app.ts
-./build/silkjsruntime -e 'console.log(require("node:path").join("a", "b"))'
-./build/silkjsruntime --test
-./build/silkjsruntime -i
+./build/silkjsruntime run dev --port 3000
+./build/silkjsruntime eval --print '6 * 7'
+./build/silkjsruntime check app.js
+./build/silkjsruntime test --reporter tap
+./build/silkjsruntime repl
+./build/silkjsruntime help run
 ```
+
+`run` executes a named `package.json` script and forwards subsequent arguments, with an optional `--` separator. Put `eval` options before the source; subsequent arguments belong to the evaluated script. With no arguments, the runtime starts the REPL. `--help` lists commands and `--help-options` lists the supported Node-compatible flags. Existing forms such as `--run`, `-e`, `--test`, and `-i` remain supported.
 
 The implementation includes CommonJS and ESM package loading, TypeScript execution, filesystem and process APIs, streams, networking and TLS/HTTP2, crypto and WebCrypto, workers and cluster, SQLite, Intl (SilkJS's ECMA-402 implementation in Silk, with its own CLDR-derived locale data; no ICU), Web APIs, WebAssembly/WASI, Node-API addons, the test runner, REPL, inspector, and native profiling. Feature-specific fixtures in [`tests/`](tests/) exercise these contracts, including cross-process and cross-realm ownership and failure paths.
 
@@ -79,6 +88,8 @@ node tests/compat.mjs
 ```
 
 `SILKJS_RUNTIME` selects the runtime executable and `NODE_REFERENCE` selects a different Node reference executable. An optional positional regular expression selects cases. Node is a test oracle or debugger client here, not a production execution backend.
+
+For unoptimized builds, use `SILKJS_TEST_TIMEOUT_MS=60000 node tests/compat.mjs`: cases that launch several child runtimes can exceed the default 15-second case timeout. `python3 tests/stack-budget-smoke.py` checks debug REPL compilation and recovery from stack overflow, including a restricted native stack.
 
 Additional integration consumers cover native addons, permissions, workers, network peers, SQLite, VM caches, inspector transport, profiling, REPL interaction, and standalone executables. Their executable inputs and platform requirements are defined in the individual fixtures. Engine-side native consumers additionally check allocator ownership and compatibility with the pinned QuickJS C reference.
 

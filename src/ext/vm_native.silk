@@ -18,7 +18,7 @@ import silkjs.js_heap { CellRef, HeapCell, HeapHeader }
 import silkjs.js_core_types { ContextState, RuntimeState, ObjectData, ObjectPayload, FunctionBytecode, FunctionDebugInfo, FrameSlots, NativeFunctionId, NativeCallProtocol, NativeErrorKind, JobEntry, HostHook, StackFrame }
 import silkjs.js_value { ValueBits }
 import silkjs.js_exceptions { JsException }
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 import silkjs.js_intrinsic_install as intrinsics
 import silkjs.js_native_functions as functions
 import silkjs.js_runtime as runtime
@@ -466,7 +466,7 @@ unsafe fn handleRealm(handle: ValueBits) -> *mut HeapHeader {
 }
 pub unsafe effect fn initializeSynthetic<'m, S: EngineServices>(engine: &mut Engine<'m, S>,
   context: *mut HeapHeader, module: *mut HeapHeader) -> () ! OutOfMemoryError | JsException ? &mut Allocator {
-  let callback = unsafe modules.getPrivateValue(unsafe CellRef<ModuleDef>.of(module))
+  let callback = modules.getPrivateValue(unsafe CellRef<ModuleDef>.of(module)).intoBits()
   let called = run Effect.result(promises.call(&mut engine, unsafe lendRealm(&context, context), unsafe lendFor(callback), unsafe lendFor(ValueBits.Undefined), &[]))
   let rt = unsafe runtime.contextRuntime(context) unsafe gc.release(&mut engine, rt, callback)
   match move called {
@@ -481,7 +481,7 @@ unsafe effect fn moduleDispatch<'m, S: EngineServices>(engine: &mut Engine<'m, S
     Result<ValueBits, OutOfMemoryError | StringLengthError | ModuleMetadataError | JsException>.Success { value } => value
     Result<ValueBits, OutOfMemoryError | StringLengthError | ModuleMetadataError | JsException>.Failure { error } => {
       match move error {
-        ModuleMetadataError duplicate => { return run engine.throwError(unsafe lendRealm(&context, context), NativeErrorKind.Syntax, b"Duplicate synthetic module export") }
+        ModuleMetadataError _duplicate => { return run engine.throwError(unsafe lendRealm(&context, context), NativeErrorKind.Syntax, b"Duplicate synthetic module export") }
         OutOfMemoryError allocation => { return run errors.materialize<ValueBits, Engine<'m, S>>(&mut engine, unsafe lendRealm(&context, context), move allocation) }
         StringLengthError length => { return run errors.materialize<ValueBits, Engine<'m, S>>(&mut engine, unsafe lendRealm(&context, context), move length) }
         JsException signal => { fail move signal }

@@ -23,7 +23,7 @@ import libs.core.owners as owners
 import libs.core.common as common
 import silkjs.js_runtime as runtime
 import silkjs.js_coverage as coverage
-import silkjs.js_coercion_host { CoercionHooks }
+import silkjs.js_coercion_host { CoercionHooks as _CoercionHooks }
 
 unsafe effect fn take<'m,S:EngineServices>(engine:&mut Engine<'m,S>,context:*mut HeapHeader,scope:&mut Scope)->ValueBits !OutOfMemoryError|StringLengthError|JsException ?&mut Allocator {
   let rt=unsafe runtime.contextRuntime(context) let memory=engine.memory

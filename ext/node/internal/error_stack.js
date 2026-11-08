@@ -59,9 +59,9 @@ function install(global) {
       const origin = evalOrigin(scriptMetadata(frame)?.evalOrigin);
       if (origin) filename = origin + ', ' + filename;
     }
-    if (frame.lineNumber > 0) {
+    if (frame.lineNumber !== 0) {
       filename += ':' + frame.lineNumber;
-      if (frame.columnNumber > 0) filename += ':' + frame.columnNumber;
+      if (frame.columnNumber !== 0) filename += ':' + frame.columnNumber;
     }
     return filename;
   }
